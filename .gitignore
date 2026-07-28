@@ -10,6 +10,7 @@ dist/deb/
 dist/*.tar.gz
 dist/*.deb
 dist/SHA256SUMS
+plans/
 debian/*
 !debian/changelog
 !debian/control

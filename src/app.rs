@@ -19,7 +19,6 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
 /// Fast tick for smooth marquee + progress bar.
 const TICK_INTERVAL: Duration = Duration::from_millis(33);
-const PANEL_ART: u16 = 20;
 const POPUP_ART: u16 = 128;
 const SPOTIFY_GREEN: [f32; 4] = [0.114, 0.725, 0.329, 1.0];
 const PANEL_PROGRESS_WIDTH: f32 = crate::marquee::VIEWPORT_WIDTH;
@@ -125,17 +124,25 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        let _ = self.frame;
         let content = if self.track.connected {
             self.panel_playing()
         } else {
             self.panel_offline()
         };
 
-        widget::mouse_area(content)
+        let pad = self.core.applet.suggested_padding(true).0;
+        let button = widget::button::custom(content)
+            .padding([0, pad])
+            .class(cosmic::theme::Button::AppletIcon);
+
+        // Panel windows default to icon-sized bounds; autosize expands for text.
+        let interactive = widget::mouse_area(button)
             .on_press(Message::TogglePopup)
             .on_middle_press(Message::PlayPause)
-            .on_scroll(Message::Scroll)
-            .into()
+            .on_scroll(Message::Scroll);
+
+        self.core.applet.autosize_window(interactive).into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
@@ -349,29 +356,36 @@ impl AppModel {
     }
 
     fn panel_offline(&self) -> Element<'_, Message> {
-        self.core
-            .applet
-            .icon_button("multimedia-player-symbolic")
+        let (w, _h) = self.core.applet.suggested_size(true);
+        widget::icon::from_name("multimedia-player-symbolic")
+            .size(w)
+            .symbolic(true)
+            .icon()
             .into()
     }
 
     fn panel_playing(&self) -> Element<'_, Message> {
-        // Touch frame so the compiler keeps the redraw counter live.
-        let _ = self.frame;
+        let (icon_w, icon_h) = self.core.applet.suggested_size(true);
+        let art_size = f32::from(icon_w.max(icon_h).max(16));
 
         let art: Element<'_, Message> = if let Some(handle) = &self.album_art {
             widget::image(handle.clone())
-                .width(Length::Fixed(f32::from(PANEL_ART)))
-                .height(Length::Fixed(f32::from(PANEL_ART)))
+                .width(Length::Fixed(art_size))
+                .height(Length::Fixed(art_size))
                 .into()
         } else {
             widget::icon::from_name("multimedia-player-symbolic")
-                .size(PANEL_ART)
+                .size(icon_w)
+                .symbolic(true)
                 .icon()
                 .into()
         };
 
-        let marquee = self.marquee.view::<Message>();
+        // Use applet-styled text so color/size match the panel (time applet pattern).
+        let marquee = self
+            .marquee
+            .view(|s| self.core.applet.text(s.to_owned()).into());
+
         let progress = self.estimated_progress();
         let bar = progress_bar(progress, PANEL_PROGRESS_WIDTH, 3.0);
 
@@ -385,7 +399,6 @@ impl AppModel {
             .align_y(Vertical::Center)
             .push(art)
             .push(text_col)
-            .padding([2, 6])
             .into()
     }
 

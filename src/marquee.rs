@@ -9,12 +9,12 @@ use cosmic::widget::{self, space};
 use std::time::{Duration, Instant};
 
 /// Visible width of the scrolling text region in the panel (px).
-pub const VIEWPORT_WIDTH: f32 = 140.0;
+pub const VIEWPORT_WIDTH: f32 = 148.0;
 /// Gap between looped copies of the text.
 pub const LOOP_GAP: f32 = 48.0;
 /// Scroll speed in pixels per second.
-pub const SPEED_PX_PER_SEC: f32 = 32.0;
-/// Pause at the start of each loop before scrolling (ms).
+pub const SPEED_PX_PER_SEC: f32 = 36.0;
+/// Pause at the start of each loop before scrolling.
 pub const START_PAUSE: Duration = Duration::from_millis(900);
 /// Approximate average glyph advance for body text (px).
 const AVG_CHAR_WIDTH: f32 = 7.2;
@@ -81,28 +81,37 @@ impl Marquee {
         self.text_width + LOOP_GAP
     }
 
-    pub fn view<'a, Message: 'a>(&'a self) -> Element<'a, Message> {
+    /// Build the marquee widget.
+    ///
+    /// `make_text` should produce panel-styled text (prefer `applet.text`).
+    pub fn view<'a, Message: 'a>(
+        &'a self,
+        make_text: impl Fn(&str) -> Element<'a, Message>,
+    ) -> Element<'a, Message> {
         if self.text.is_empty() {
-            return widget::text::body("").into();
-        }
-
-        if !self.needs_scroll() {
-            return widget::container(widget::text::body(&self.text))
+            return widget::container(space::horizontal())
                 .width(Length::Fixed(VIEWPORT_WIDTH))
                 .into();
         }
 
+        if !self.needs_scroll() {
+            return widget::container(make_text(&self.text))
+                .width(Length::Fixed(VIEWPORT_WIDTH))
+                .align_y(cosmic::iced::Alignment::Center)
+                .into();
+        }
+
         let offset = self.offset_px();
-        // Two copies + gap → seamless loop when clipped.
         let gap = space::horizontal().width(Length::Fixed(LOOP_GAP));
         let row = widget::row::with_capacity(3)
             .align_y(cosmic::iced::Alignment::Center)
-            .push(widget::text::body(&self.text))
+            .push(make_text(&self.text))
             .push(gap)
-            .push(widget::text::body(&self.text));
+            .push(make_text(&self.text));
 
         widget::container(row)
             .width(Length::Fixed(VIEWPORT_WIDTH))
+            .align_y(cosmic::iced::Alignment::Center)
             .clip(true)
             .padding(Padding {
                 top: 0.0,
@@ -115,7 +124,6 @@ impl Marquee {
 }
 
 fn estimate_text_width(text: &str) -> f32 {
-    // Prefer char count over bytes; rough CJK-friendly bump.
     let mut w = 0.0_f32;
     for ch in text.chars() {
         w += if ch.is_ascii() {
@@ -144,7 +152,6 @@ mod tests {
         let mut m = Marquee::default();
         m.set_text("A very long song title — Some Artist Name That Overflows");
         assert!(m.needs_scroll());
-        // Immediately after set, still in pause window.
         assert_eq!(m.offset_px(), 0.0);
     }
 }

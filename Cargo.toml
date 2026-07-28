@@ -24,6 +24,8 @@ features = [
     # Applet support
     "applet",
     "applet-token",
+    # Required so the panel window grows with cover + marquee text
+    "autosize",
     # Uses cosmic-settings-daemon to watch for config file changes
     "dbus-config",
     # Support creating additional application windows.

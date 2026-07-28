@@ -419,7 +419,7 @@ impl AppModel {
         let bar = progress_bar(progress, PANEL_PROGRESS_WIDTH, 2.0);
 
         let text_col = widget::column::with_capacity(2)
-            .spacing(1)
+            .spacing(4)
             .push(marquee)
             .push(bar);
 

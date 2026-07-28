@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 /// Visible width of the scrolling text region in the panel (px).
 pub const VIEWPORT_WIDTH: f32 = 168.0;
 /// Line box height for marquee text (fits XS panel with 24px art).
-pub const LINE_HEIGHT: f32 = 16.0;
+pub const LINE_HEIGHT: f32 = 20.0;
 /// Gap between looped copies of the text.
 pub const LOOP_GAP: f32 = 40.0;
 /// Scroll speed in pixels per second.

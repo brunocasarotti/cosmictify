@@ -1,51 +1,79 @@
 # Cosmictify
 
-Spotify control applet for the [COSMIC™](https://system76.com/cosmic) desktop (Pop!_OS 24.04+).
+**Spotify panel applet for COSMIC Desktop / Pop!_OS** — now playing, animated marquee, progress bar, and MPRIS media controls.
 
-**License:** MIT  
-**App ID:** `com.brunocasarotti.Cosmictify`
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.97%2B-orange.svg)](https://www.rust-lang.org/)
+[![COSMIC](https://img.shields.io/badge/desktop-COSMIC-blue.svg)](https://system76.com/cosmic)
+[![Pop!_OS](https://img.shields.io/badge/Pop!_OS-24.04-6C3CE9.svg)](https://pop.system76.com/)
 
-Shows what's playing (cover + title + progress), transport controls via **MPRIS/D-Bus**, and library like via the **Spotify Web API** (OAuth PKCE).
+> COSMIC™ Spotify tray · now playing · libcosmic · MPRIS · Linux panel applet
 
-See [`plans/2026-07-28-cosmictify-applet.md`](plans/2026-07-28-cosmictify-applet.md) for the full plan.
+**App ID:** `com.brunocasarotti.Cosmictify`  
+**License:** MIT
+
+## Features
+
+- **Panel tray:** album cover + scrolling **Title — Artist** marquee + thin progress bar  
+- **Popup:** large artwork, seek, play/pause, next/previous, volume, open in Spotify  
+- **Shortcuts:** scroll = next/prev · middle-click = play/pause  
+- **Spotify-only MPRIS** (won’t hijack YouTube/browser players or thicken your top bar)  
+- Built with **Rust** + **libcosmic** for native COSMIC look & feel  
+
+> Library **like (♥)** via Spotify Web API (OAuth PKCE) is planned next.
+
+## Screenshots
+
+_Add panel + popup screenshots here after capture._
 
 ## Requirements
 
-- Pop!_OS 24.04 / COSMIC
-- Rust (via [asdf](https://asdf-vm.com/) recommended): see `.tool-versions`
-- Build deps: `libdbus-1-dev pkg-config libssl-dev build-essential`
-- Spotify desktop client (for MPRIS)
-- [`just`](https://github.com/casey/just)
+- [Pop!_OS](https://pop.system76.com/) 24.04+ with **COSMIC** desktop  
+- [Spotify](https://www.spotify.com/) desktop client (MPRIS)  
+- Rust (asdf recommended) — see `.tool-versions`  
+- Build packages:
 
 ```bash
-# asdf
-cd ~/Projects/cosmictify
-# ensures rust stable from .tool-versions
-rustc --version
-
-sudo apt install libdbus-1-dev pkg-config libssl-dev build-essential
+sudo apt install libdbus-1-dev pkg-config libssl-dev build-essential \
+  libxkbcommon-dev libwayland-dev libegl1-mesa-dev
 cargo install just
 ```
 
-## Build
+## Build & install (user-local)
 
 ```bash
-just build-release
-# or
-just run
-```
-
-## Install (user-local, no sudo)
-
-```bash
+git clone https://github.com/brunocasarotti/cosmictify.git
+cd cosmictify
 just build-release
 just install-local
 ```
 
 Then: **Settings → Desktop → Panel → Configure panel applets → Cosmictify**.
 
-Uninstall: `just uninstall-local`.
+```bash
+just uninstall-local   # remove
+just run               # debug run
+cargo test --release
+```
+
+## How it works
+
+Cosmictify talks to the Spotify desktop app over **MPRIS on D-Bus** (same family of APIs as `playerctl`). No Spotify Premium required for local play/pause/skip on the desktop client. See the design notes in [`plans/`](plans/).
+
+## Keywords / topics
+
+`cosmic` · `cosmic-desktop` · `pop-os` · `spotify` · `mpris` · `panel-applet` · `libcosmic` · `rust` · `now-playing` · `linux-desktop` · `media-controls` · `system76`
+
+## Related projects
+
+- [pop-os/cosmic-applet-template](https://github.com/pop-os/cosmic-applet-template)  
+- [pop-os/libcosmic](https://github.com/pop-os/libcosmic)  
+- [Ebbo/cosmic-applet-music-player](https://github.com/Ebbo/cosmic-applet-music-player) (generic MPRIS applet)
 
 ## Status
 
-Phase 0 scaffold from [cosmic-applet-template](https://github.com/pop-os/cosmic-applet-template). MPRIS + like UI coming next.
+Daily-driver MPRIS MVP works on Pop!_OS 24.04 COSMIC. Web API like button and packaging polish are next.
+
+## License
+
+[MIT](LICENSE) © Bruno Casarotti

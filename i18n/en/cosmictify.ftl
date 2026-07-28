@@ -1,0 +1,11 @@
+app-title = Cosmictify
+about = About
+view = View
+welcome = Cosmictify
+page-id = Page { $num }
+git-description = Git commit {$hash} on {$date}
+example-row = Example Row
+offline = Spotify offline
+nothing-playing = Nothing playing — open Spotify
+connect-spotify = Connect Spotify
+open-spotify = Open in Spotify

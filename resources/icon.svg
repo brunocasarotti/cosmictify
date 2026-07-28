@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Cosmictify: green disc + note (panel symbolic-friendly) -->
+  <circle cx="64" cy="64" r="56" fill="#1DB954"/>
+  <circle cx="64" cy="64" r="42" fill="none" stroke="#0a0a0a" stroke-width="6" opacity="0.25"/>
+  <circle cx="64" cy="64" r="28" fill="none" stroke="#0a0a0a" stroke-width="6" opacity="0.35"/>
+  <circle cx="64" cy="64" r="14" fill="none" stroke="#0a0a0a" stroke-width="6" opacity="0.45"/>
+  <!-- play triangle -->
+  <path d="M54 44 L54 84 L88 64 Z" fill="#0a0a0a" opacity="0.9"/>
+</svg>

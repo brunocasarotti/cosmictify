@@ -95,15 +95,21 @@ impl TrackSnapshot {
         if !self.connected {
             return String::new();
         }
-        if self.title.is_empty() {
-            return self.identity.clone();
+        let title = collapse_ws(&self.title);
+        let artist = collapse_ws(&self.artist);
+        if title.is_empty() {
+            return collapse_ws(&self.identity);
         }
-        if self.artist.is_empty() {
-            self.title.clone()
+        if artist.is_empty() {
+            title
         } else {
-            format!("{} — {}", self.title, self.artist)
+            format!("{title} — {artist}")
         }
     }
+}
+
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub fn format_duration(d: Duration) -> String {

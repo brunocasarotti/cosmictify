@@ -97,7 +97,9 @@ impl Marquee {
         if !self.needs_scroll() {
             return widget::container(make_text(&self.text))
                 .width(Length::Fixed(VIEWPORT_WIDTH))
+                .height(Length::Shrink)
                 .align_y(cosmic::iced::Alignment::Center)
+                .clip(true)
                 .into();
         }
 
@@ -111,6 +113,7 @@ impl Marquee {
 
         widget::container(row)
             .width(Length::Fixed(VIEWPORT_WIDTH))
+            .height(Length::Shrink)
             .align_y(cosmic::iced::Alignment::Center)
             .clip(true)
             .padding(Padding {

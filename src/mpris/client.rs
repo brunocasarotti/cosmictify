@@ -18,7 +18,7 @@ pub enum MprisCommand {
     SetVolume(f64),
 }
 
-/// Poll current track snapshot. Prefers Spotify, else first active, else first player.
+/// Poll current track snapshot. Spotify-only (this is Cosmictify).
 pub fn fetch_snapshot() -> TrackSnapshot {
     let Ok(finder) = PlayerFinder::new() else {
         return TrackSnapshot::default();
@@ -28,21 +28,17 @@ pub fn fetch_snapshot() -> TrackSnapshot {
         return TrackSnapshot::default();
     };
 
-    if players.is_empty() {
+    let Some(player) = pick_spotify(&players) else {
         return TrackSnapshot::default();
-    }
+    };
 
-    let player = pick_player(&players);
     snapshot_from_player(player)
 }
 
 pub fn apply_command(cmd: MprisCommand) -> Result<(), String> {
     let finder = PlayerFinder::new().map_err(|e| e.to_string())?;
     let players = finder.find_all().map_err(|e| e.to_string())?;
-    if players.is_empty() {
-        return Err("no MPRIS players".into());
-    }
-    let player = pick_player(&players);
+    let player = pick_spotify(&players).ok_or_else(|| "Spotify not running".to_string())?;
 
     match cmd {
         MprisCommand::PlayPause => player.play_pause().map_err(|e| e.to_string())?,
@@ -59,22 +55,16 @@ pub fn apply_command(cmd: MprisCommand) -> Result<(), String> {
                 .length()
                 .ok_or_else(|| "track length unknown".to_string())?;
             let target = Duration::from_secs_f64(length.as_secs_f64() * frac);
-            // Prefer set_position when track id is available.
             if let Some(track_id) = meta.track_id() {
                 if let Err(e) = player.set_position(track_id, &target) {
-                    // Fallback: relative seek from current position.
-                    let pos = player
-                        .get_position()
-                        .unwrap_or(Duration::ZERO);
-                    let delta = target
-                        .as_micros()
-                        .saturating_sub(pos.as_micros()) as i64;
-                    player.seek(delta).map_err(|err| format!("{e}; seek: {err}"))?;
+                    let pos = player.get_position().unwrap_or(Duration::ZERO);
+                    let delta = target.as_micros().saturating_sub(pos.as_micros()) as i64;
+                    player
+                        .seek(delta)
+                        .map_err(|err| format!("{e}; seek: {err}"))?;
                 }
             } else {
-                let pos = player
-                    .get_position()
-                    .unwrap_or(Duration::ZERO);
+                let pos = player.get_position().unwrap_or(Duration::ZERO);
                 let delta = target.as_micros() as i64 - pos.as_micros() as i64;
                 player.seek(delta).map_err(|e| e.to_string())?;
             }
@@ -84,30 +74,14 @@ pub fn apply_command(cmd: MprisCommand) -> Result<(), String> {
     Ok(())
 }
 
-fn pick_player<'a>(players: &'a [Player]) -> &'a Player {
-    // 1) Preferred name hint (spotify)
-    for hint in PREFERRED_HINTS {
-        if let Some(p) = players.iter().find(|p| {
-            let bus = p.bus_name_trimmed().to_ascii_lowercase();
-            let id = p.identity().to_ascii_lowercase();
-            bus.contains(hint) || id.contains(hint)
-        }) {
-            return p;
-        }
-    }
-
-    // 2) Currently playing
-    if let Some(p) = players.iter().find(|p| {
-        matches!(
-            p.get_playback_status(),
-            Ok(mpris::PlaybackStatus::Playing)
-        )
-    }) {
-        return p;
-    }
-
-    // 3) First available
-    &players[0]
+fn pick_spotify<'a>(players: &'a [Player]) -> Option<&'a Player> {
+    players.iter().find(|p| {
+        let bus = p.bus_name_trimmed().to_ascii_lowercase();
+        let id = p.identity().to_ascii_lowercase();
+        PREFERRED_HINTS
+            .iter()
+            .any(|hint| bus.contains(hint) || id.contains(hint))
+    })
 }
 
 fn snapshot_from_player(player: &Player) -> TrackSnapshot {
@@ -120,15 +94,15 @@ fn snapshot_from_player(player: &Player) -> TrackSnapshot {
 
     let title = metadata
         .title()
-        .map(|s| s.to_string())
+        .map(sanitize_one_line)
         .unwrap_or_default();
     let artist = metadata
         .artists()
-        .map(|a| a.join(", "))
+        .map(|a| sanitize_one_line(&a.join(", ")))
         .unwrap_or_default();
     let album = metadata
         .album_name()
-        .map(|s| s.to_string())
+        .map(sanitize_one_line)
         .unwrap_or_default();
     let art_url = metadata.art_url().map(|s| s.to_string());
     let url = metadata.url().map(|s| s.to_string());
@@ -175,4 +149,9 @@ fn snapshot_from_player(player: &Player) -> TrackSnapshot {
         can_seek,
         shuffle,
     }
+}
+
+/// Collapse whitespace/newlines so panel text never wraps vertically.
+fn sanitize_one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }

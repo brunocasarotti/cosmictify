@@ -11,6 +11,7 @@ use cosmic::iced::mouse::ScrollDelta;
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::time;
 use cosmic::iced::widget::image::Handle;
+use cosmic::iced::widget::text::Wrapping;
 use cosmic::iced::{window::Id, Length, Limits, Subscription};
 use cosmic::prelude::*;
 use cosmic::widget::{self, space};
@@ -136,13 +137,22 @@ impl cosmic::Application for AppModel {
             .padding([0, pad])
             .class(cosmic::theme::Button::AppletIcon);
 
-        // Panel windows default to icon-sized bounds; autosize expands for text.
+        // Panel windows default to icon-sized bounds; autosize expands width for text.
+        // Keep height capped to the panel so multi-line content cannot thicken the bar.
         let interactive = widget::mouse_area(button)
             .on_press(Message::TogglePopup)
             .on_middle_press(Message::PlayPause)
             .on_scroll(Message::Scroll);
 
-        self.core.applet.autosize_window(interactive).into()
+        let (_sw, sh) = self.core.applet.suggested_window_size();
+        let panel_h = sh.get() as f32;
+
+        self.core
+            .applet
+            .autosize_window(interactive)
+            .max_height(panel_h)
+            .auto_height(false)
+            .into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
@@ -381,10 +391,14 @@ impl AppModel {
                 .into()
         };
 
-        // Use applet-styled text so color/size match the panel (time applet pattern).
-        let marquee = self
-            .marquee
-            .view(|s| self.core.applet.text(s.to_owned()).into());
+        // Use applet-styled single-line text (Wrapping::None → marquee, not multi-line growth).
+        let marquee = self.marquee.view(|s| {
+            self.core
+                .applet
+                .text(s.to_owned())
+                .wrapping(Wrapping::None)
+                .into()
+        });
 
         let progress = self.estimated_progress();
         let bar = progress_bar(progress, PANEL_PROGRESS_WIDTH, 3.0);
@@ -394,12 +408,20 @@ impl AppModel {
             .push(marquee)
             .push(bar);
 
-        widget::row::with_capacity(2)
-            .spacing(8)
-            .align_y(Vertical::Center)
-            .push(art)
-            .push(text_col)
-            .into()
+        // Center within panel height; never request more than icon row height.
+        let (icon_w2, icon_h2) = self.core.applet.suggested_size(true);
+        let row_h = f32::from(icon_h2.max(icon_w2));
+
+        widget::container(
+            widget::row::with_capacity(2)
+                .spacing(8)
+                .align_y(Vertical::Center)
+                .push(art)
+                .push(text_col),
+        )
+        .height(Length::Fixed(row_h))
+        .align_y(Vertical::Center)
+        .into()
     }
 
     fn popup_playing(&self) -> Element<'_, Message> {

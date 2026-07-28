@@ -12,6 +12,38 @@
 **App ID:** `com.brunocasarotti.Cosmictify`  
 **License:** MIT
 
+## Install (no Rust, no compile)
+
+### One-liner
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brunocasarotti/cosmictify/main/install.sh | bash
+```
+
+Installs into `~/.local` (binary + desktop entry + icon).
+
+### `.deb` (Pop!_OS / Ubuntu)
+
+From the [latest release](https://github.com/brunocasarotti/cosmictify/releases/latest):
+
+```bash
+# download cosmictify_*_amd64.deb then:
+sudo apt install ./cosmictify_*_amd64.deb
+```
+
+### After install
+
+1. **Settings → Desktop → Panel → Configure panel applets → Cosmictify**
+2. Ensure Spotify desktop is running
+
+Uninstall user install:
+
+```bash
+rm -f ~/.local/bin/cosmictify \
+  ~/.local/share/applications/com.brunocasarotti.Cosmictify.desktop \
+  ~/.local/share/icons/hicolor/scalable/apps/com.brunocasarotti.Cosmictify.svg
+```
+
 ## Features
 
 - **Panel tray:** album cover + scrolling **Title — Artist** marquee + thin progress bar  
@@ -22,11 +54,9 @@
 
 > Library **like (♥)** via Spotify Web API (OAuth PKCE) is planned next.
 
-## Screenshots
+## Build from source
 
-_Add panel + popup screenshots here after capture._
-
-## Requirements
+### Requirements
 
 - [Pop!_OS](https://pop.system76.com/) 24.04+ with **COSMIC** desktop  
 - [Spotify](https://www.spotify.com/) desktop client (MPRIS)  
@@ -39,7 +69,7 @@ sudo apt install libdbus-1-dev pkg-config libssl-dev build-essential \
 cargo install just
 ```
 
-## Build & install (user-local)
+### Build & install (user-local)
 
 ```bash
 git clone https://github.com/brunocasarotti/cosmictify.git
@@ -48,17 +78,24 @@ just build-release
 just install-local
 ```
 
-Then: **Settings → Desktop → Panel → Configure panel applets → Cosmictify**.
-
 ```bash
 just uninstall-local   # remove
 just run               # debug run
 cargo test --release
+just package           # make dist/*.tar.gz and dist/*.deb
 ```
 
 ## How it works
 
 Cosmictify talks to the Spotify desktop app over **MPRIS on D-Bus** (same family of APIs as `playerctl`). No Spotify Premium required for local play/pause/skip on the desktop client. See the design notes in [`plans/`](plans/).
+
+## Releases for maintainers
+
+```bash
+just release 0.1.0   # tag + GitHub release with tarball/deb
+```
+
+CI also builds on `v*` tags (`.github/workflows/release.yml`).
 
 ## Keywords / topics
 

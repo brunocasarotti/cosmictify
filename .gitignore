@@ -5,6 +5,11 @@ debug/
 target/
 vendor/
 vendor.tar
+dist/stage/
+dist/deb/
+dist/*.tar.gz
+dist/*.deb
+dist/SHA256SUMS
 debian/*
 !debian/changelog
 !debian/control

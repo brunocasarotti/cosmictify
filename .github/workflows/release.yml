@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0). Leave empty to build untagged artifact only."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  APP_NAME: cosmictify
+  APP_ID: com.brunocasarotti.Cosmictify
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libdbus-1-dev libssl-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev wayland-protocols \
+            libegl1-mesa-dev libgl1-mesa-dev \
+            libseat-dev libinput-dev \
+            libclang-dev curl
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package tarball + deb
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+            VERSION="${{ inputs.tag }}"
+            VERSION="${VERSION#v}"
+          fi
+          if [[ -z "$VERSION" || "$VERSION" == "$GITHUB_REF_NAME" ]]; then
+            VERSION="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          bash scripts/package-release.sh "$VERSION"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmictify-linux-amd64
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+          body: |
+            ## Install (no Rust needed)
+
+            ### One-liner (user install, `~/.local`)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/brunocasarotti/cosmictify/main/install.sh | bash
+            ```
+
+            ### Or download assets
+            - **`.tar.gz`** — extract and run `./install.sh` inside
+            - **`.deb`** — `sudo apt install ./cosmictify_*.deb` (Pop!_OS / Ubuntu)
+
+            Then: **Settings → Desktop → Panel → Configure panel applets → Cosmictify**

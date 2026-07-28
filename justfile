@@ -80,6 +80,40 @@ uninstall-local:
     rm -f "${prefix}/share/metainfo/{{appid}}.metainfo.xml"
     rm -f "${prefix}/share/icons/hicolor/scalable/apps/{{appid}}.svg"
 
+# Build release tarball + .deb into dist/ (no Rust needed for end users of those artifacts)
+package version="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just build-release
+    bash scripts/package-release.sh {{version}}
+
+# Publish a GitHub release: just release 0.1.0
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ver="{{version}}"
+    ver="${ver#v}"
+    if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "usage: just release 0.1.0" >&2
+      exit 1
+    fi
+    # bump Cargo.toml if needed
+    sed -i "0,/^version = /s/^version = .*/version = \"${ver}\"/" Cargo.toml
+    just package "${ver}"
+    git add Cargo.toml Cargo.lock dist/.gitkeep 2>/dev/null || true
+    git add Cargo.toml
+    git commit -m "release: v${ver}" || true
+    git tag -a "v${ver}" -m "v${ver}"
+    git push origin HEAD
+    git push origin "v${ver}"
+    # CI builds+uploads on tag; also attach local artifacts as a backup
+    gh release create "v${ver}" \
+      --title "v${ver}" \
+      --generate-notes \
+      dist/cosmictify-${ver}-linux-x86_64.tar.gz \
+      dist/cosmictify_${ver}_amd64.deb \
+      dist/SHA256SUMS
+
 # Vendor dependencies locally
 vendor:
     mkdir -p .cargo

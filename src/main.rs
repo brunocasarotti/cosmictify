@@ -4,6 +4,7 @@ mod app;
 mod art;
 mod config;
 mod i18n;
+mod marquee;
 mod mpris;
 
 fn main() -> cosmic::iced::Result {

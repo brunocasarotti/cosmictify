@@ -3,6 +3,7 @@
 use crate::art;
 use crate::config::Config;
 use crate::fl;
+use crate::marquee::Marquee;
 use crate::mpris::{self, format_duration, MprisCommand, PlaybackStatus, TrackSnapshot};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
@@ -16,10 +17,12 @@ use cosmic::widget::{self, space};
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
-const TICK_INTERVAL: Duration = Duration::from_millis(250);
+/// Fast tick for smooth marquee + progress bar.
+const TICK_INTERVAL: Duration = Duration::from_millis(33);
 const PANEL_ART: u16 = 20;
 const POPUP_ART: u16 = 128;
 const SPOTIFY_GREEN: [f32; 4] = [0.114, 0.725, 0.329, 1.0];
+const PANEL_PROGRESS_WIDTH: f32 = crate::marquee::VIEWPORT_WIDTH;
 
 pub struct AppModel {
     core: cosmic::Core,
@@ -32,6 +35,10 @@ pub struct AppModel {
     current_art_url: Option<String>,
     /// Suppress MPRIS volume overwrite briefly after local drag.
     volume_override: Option<(f64, Instant)>,
+    /// Scrolling "title — artist" in the panel.
+    marquee: Marquee,
+    /// Bumped on each tick so iced redraws the time-based marquee/progress.
+    frame: u64,
 }
 
 impl Default for AppModel {
@@ -45,6 +52,8 @@ impl Default for AppModel {
             album_art: None,
             current_art_url: None,
             volume_override: None,
+            marquee: Marquee::default(),
+            frame: 0,
         }
     }
 }
@@ -194,7 +203,10 @@ impl cosmic::Application for AppModel {
             Message::MprisUpdate(snap) => {
                 return self.apply_snapshot(snap);
             }
-            Message::Tick => {}
+            Message::Tick => {
+                // Time-based marquee/progress need a state bump to repaint.
+                self.frame = self.frame.wrapping_add(1);
+            }
             Message::PlayPause => {
                 return run_command(MprisCommand::PlayPause);
             }
@@ -318,6 +330,12 @@ impl AppModel {
 
         self.track = snap;
 
+        if self.track.connected {
+            self.marquee.set_text(self.track.display_line());
+        } else {
+            self.marquee.clear();
+        }
+
         if art_changed {
             if let Some(url) = self.track.art_url.clone() {
                 self.current_art_url = Some(url.clone());
@@ -338,6 +356,9 @@ impl AppModel {
     }
 
     fn panel_playing(&self) -> Element<'_, Message> {
+        // Touch frame so the compiler keeps the redraw counter live.
+        let _ = self.frame;
+
         let art: Element<'_, Message> = if let Some(handle) = &self.album_art {
             widget::image(handle.clone())
                 .width(Length::Fixed(f32::from(PANEL_ART)))
@@ -350,16 +371,13 @@ impl AppModel {
                 .into()
         };
 
-        let line = self.track.display_line();
-        let truncated = truncate_chars(&line, 36);
-        let label = widget::text::body(truncated);
-
+        let marquee = self.marquee.view::<Message>();
         let progress = self.estimated_progress();
-        let bar = progress_bar(progress, 120.0, 3.0);
+        let bar = progress_bar(progress, PANEL_PROGRESS_WIDTH, 3.0);
 
         let text_col = widget::column::with_capacity(2)
             .spacing(2)
-            .push(label)
+            .push(marquee)
             .push(bar);
 
         widget::row::with_capacity(2)
@@ -513,17 +531,6 @@ fn progress_bar<'a>(fraction: f64, width: f32, height: f32) -> Element<'a, Messa
     .into()
 }
 
-fn truncate_chars(s: &str, max: usize) -> String {
-    let count = s.chars().count();
-    if count <= max {
-        return s.to_string();
-    }
-    let take = max.saturating_sub(1);
-    let mut out: String = s.chars().take(take).collect();
-    out.push('…');
-    out
-}
-
 async fn poll_mpris() -> TrackSnapshot {
     tokio::task::spawn_blocking(mpris::fetch_snapshot)
         .await
@@ -539,7 +546,6 @@ fn run_command(cmd: MprisCommand) -> Task<cosmic::Action<Message>> {
     )
 }
 
-// Silence unused - used for clarity when matching pause UI later
 #[allow(dead_code)]
 fn _status_playing(s: PlaybackStatus) -> bool {
     s.is_playing()

@@ -86,8 +86,13 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/brunocasarotti/cosmictify/main/install.sh | bash
             ```
 
+            ### Uninstall (user install)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/brunocasarotti/cosmictify/main/install.sh | bash -s -- --uninstall
+            ```
+
             ### Or download assets
-            - **`.tar.gz`** — extract and run `./install.sh` inside
-            - **`.deb`** — `sudo apt install ./cosmictify_*.deb` (Pop!_OS / Ubuntu)
+            - **`.tar.gz`** — extract and run `./install.sh` (or `./install.sh --uninstall`)
+            - **`.deb`** — `sudo apt install ./cosmictify_*.deb` / `sudo apt remove cosmictify`
 
             Then: **Settings → Desktop → Panel → Configure panel applets → Cosmictify**

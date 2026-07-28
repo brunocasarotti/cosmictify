@@ -40,6 +40,41 @@ PREFIX="${PREFIX:-$HOME/.local}"
 APP_ID="com.brunocasarotti.Cosmictify"
 APP_NAME="cosmictify"
 
+do_uninstall() {
+  local removed=0
+  local paths=(
+    "$PREFIX/bin/${APP_NAME}"
+    "$PREFIX/share/applications/${APP_ID}.desktop"
+    "$PREFIX/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
+    "$PREFIX/share/metainfo/${APP_ID}.metainfo.xml"
+    "$PREFIX/share/appdata/${APP_ID}.metainfo.xml"
+  )
+  echo "Uninstalling Cosmictify from ${PREFIX}..."
+  for f in "${paths[@]}"; do
+    if [[ -e "$f" || -L "$f" ]]; then
+      rm -f "$f"
+      echo "  removed $f"
+      removed=1
+    fi
+  done
+  gtk-update-icon-cache -f "$PREFIX/share/icons/hicolor" 2>/dev/null || true
+  if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+    pkill -x "$APP_NAME" 2>/dev/null || true
+    echo "  stopped running ${APP_NAME} process(es)"
+  fi
+  if [[ "$removed" -eq 0 ]]; then
+    echo "Nothing to remove under ${PREFIX}."
+    return 0
+  fi
+  echo "Cosmictify removed from ${PREFIX}."
+  echo "Remove it from the panel if the icon remains: Settings → Desktop → Panel → Applets"
+}
+
+if [[ "${1:-}" == "--uninstall" || "${1:-}" == "-u" ]]; then
+  do_uninstall
+  exit 0
+fi
+
 install -Dm0755 "$ROOT/bin/${APP_NAME}" "$PREFIX/bin/${APP_NAME}"
 install -Dm0644 "$ROOT/share/applications/${APP_ID}.desktop" \
   "$PREFIX/share/applications/${APP_ID}.desktop"
@@ -51,13 +86,13 @@ if [[ -f "$ROOT/share/metainfo/${APP_ID}.metainfo.xml" ]]; then
 fi
 gtk-update-icon-cache -f "$PREFIX/share/icons/hicolor" 2>/dev/null || true
 
-# Ensure ~/.local/bin is on PATH hint
 if ! command -v cosmictify >/dev/null 2>&1; then
   echo "Note: add \$HOME/.local/bin to your PATH if cosmictify is not found."
 fi
 
 echo "Installed Cosmictify to $PREFIX"
 echo "Add it: Settings → Desktop → Panel → Configure panel applets → Cosmictify"
+echo "Uninstall: ./install.sh --uninstall"
 EOF
 chmod +x "$STAGE/install.sh"
 
@@ -69,6 +104,9 @@ Spotify panel applet for COSMIC Desktop / Pop!_OS.
 
 Install (no compiler needed):
   ./install.sh
+
+Uninstall:
+  ./install.sh --uninstall
 
 Or manually copy bin/ and share/ into ~/.local/
 

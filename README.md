@@ -36,12 +36,26 @@ sudo apt install ./cosmictify_*_amd64.deb
 1. **Settings → Desktop → Panel → Configure panel applets → Cosmictify**
 2. Ensure Spotify desktop is running
 
-Uninstall user install:
+### Uninstall
+
+**User install** (`~/.local` / one-liner / tarball):
 
 ```bash
-rm -f ~/.local/bin/cosmictify \
-  ~/.local/share/applications/com.brunocasarotti.Cosmictify.desktop \
-  ~/.local/share/icons/hicolor/scalable/apps/com.brunocasarotti.Cosmictify.svg
+curl -fsSL https://raw.githubusercontent.com/brunocasarotti/cosmictify/main/install.sh | bash -s -- --uninstall
+```
+
+Or, from a downloaded tarball: `./install.sh --uninstall`
+
+**Debian package:**
+
+```bash
+sudo apt remove cosmictify
+```
+
+**From source (dev):**
+
+```bash
+just uninstall-local
 ```
 
 ## Features

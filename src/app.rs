@@ -126,14 +126,31 @@ impl cosmic::Application for AppModel {
 
     fn view(&self) -> Element<'_, Self::Message> {
         let _ = self.frame;
-        let content = if self.track.connected {
+
+        let inner = if self.track.connected {
             self.panel_playing()
         } else {
             self.panel_offline()
         };
 
-        let (h_pad, _v_pad) = self.core.applet.suggested_padding(true);
-        let button = widget::button::custom(content)
+        // Match official applets (e.g. time): force vertical size to icon+padding,
+        // let autosize grow width only. Do NOT lock height with auto_height(false) —
+        // that crushed the marquee on XS panels.
+        let (icon_w, icon_h) = self.core.applet.suggested_size(true);
+        let (_h_pad_sym, v_pad) = self.core.applet.suggested_padding(true);
+        let (h_pad, _) = self.core.applet.suggested_padding(true);
+        let force_h = f32::from(icon_h.saturating_add(v_pad.saturating_mul(2)));
+
+        let body = widget::row::with_capacity(2)
+            .align_y(Vertical::Center)
+            .push(inner)
+            .push(
+                widget::container(space::vertical())
+                    .height(Length::Fixed(force_h))
+                    .width(Length::Fixed(0.0)),
+            );
+
+        let button = widget::button::custom(body)
             .padding([0, h_pad])
             .class(cosmic::theme::Button::AppletIcon);
 
@@ -142,15 +159,9 @@ impl cosmic::Application for AppModel {
             .on_middle_press(Message::PlayPause)
             .on_scroll(Message::Scroll);
 
-        // Width grows with cover+marquee; height stays exactly the panel thickness.
-        let panel_h = self.panel_height();
-        self.core
-            .applet
-            .autosize_window(interactive)
-            .min_height(panel_h)
-            .max_height(panel_h)
-            .auto_height(false)
-            .into()
+        // Panel already supplies height via suggested_bounds inside autosize_window.
+        let _ = icon_w;
+        self.core.applet.autosize_window(interactive).into()
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
@@ -364,37 +375,37 @@ impl AppModel {
     }
 
     fn panel_offline(&self) -> Element<'_, Message> {
-        let panel_h = self.panel_height();
-        let icon = self.art_pixel_size().round() as u16;
-        widget::container(
-            widget::icon::from_name("multimedia-player-symbolic")
-                .size(icon)
-                .symbolic(true)
-                .icon(),
-        )
-        .height(Length::Fixed(panel_h))
-        .align_y(Vertical::Center)
-        .into()
+        // Non-symbolic size is larger (XS: 24 vs symbolic 16).
+        let (w, _) = self.core.applet.suggested_size(false);
+        widget::icon::from_name("multimedia-player-symbolic")
+            .size(w)
+            .symbolic(true)
+            .icon()
+            .into()
     }
 
     fn panel_playing(&self) -> Element<'_, Message> {
-        let panel_h = self.panel_height();
-        let art_size = self.art_pixel_size();
+        // Album art: use non-symbolic applet size (XS=24, S=32, …) so cover isn't tiny.
+        let (art_px, _) = self.core.applet.suggested_size(false);
+        let art_size = f32::from(art_px);
 
         let art: Element<'_, Message> = if let Some(handle) = &self.album_art {
-            widget::image(handle.clone())
-                .width(Length::Fixed(art_size))
-                .height(Length::Fixed(art_size))
-                .into()
+            widget::container(
+                widget::image(handle.clone())
+                    .width(Length::Fixed(art_size))
+                    .height(Length::Fixed(art_size)),
+            )
+            .width(Length::Fixed(art_size))
+            .height(Length::Fixed(art_size))
+            .into()
         } else {
             widget::icon::from_name("multimedia-player-symbolic")
-                .size(art_size.round() as u16)
+                .size(art_px)
                 .symbolic(true)
                 .icon()
                 .into()
         };
 
-        // Single-line applet text → horizontal marquee, never grows panel height.
         let marquee = self.marquee.view(|s| {
             self.core
                 .applet
@@ -403,50 +414,21 @@ impl AppModel {
                 .into()
         });
 
+        // Thin progress under the marquee (still one visual “line” next to the cover).
         let progress = self.estimated_progress();
-        let bar = progress_bar(progress, PANEL_PROGRESS_WIDTH, 3.0);
+        let bar = progress_bar(progress, PANEL_PROGRESS_WIDTH, 2.0);
 
         let text_col = widget::column::with_capacity(2)
-            .spacing(2)
+            .spacing(1)
             .push(marquee)
             .push(bar);
 
-        widget::container(
-            widget::row::with_capacity(2)
-                .spacing(8)
-                .align_y(Vertical::Center)
-                .push(art)
-                .push(text_col),
-        )
-        .height(Length::Fixed(panel_h))
-        .align_y(Vertical::Center)
-        .clip(true)
-        .into()
-    }
-
-    /// Full panel thickness (logical px) — never exceed this.
-    fn panel_height(&self) -> f32 {
-        if let Some(bounds) = self.core.applet.suggested_bounds {
-            if bounds.height > 8.0 {
-                return bounds.height;
-            }
-        }
-        let (_w, sh) = self.core.applet.suggested_window_size();
-        let h = sh.get() as f32;
-        if h > 8.0 {
-            h
-        } else {
-            // Fallback before panel configures bounds (typical COSMIC S/M panel).
-            32.0
-        }
-    }
-
-    /// Album art size: fill most of the panel height (not the tiny symbolic icon size).
-    fn art_pixel_size(&self) -> f32 {
-        let panel_h = self.panel_height();
-        let (full_w, _) = self.core.applet.suggested_size(false);
-        let from_panel = (panel_h - 6.0).clamp(20.0, 40.0);
-        from_panel.max(f32::from(full_w)).min(panel_h - 2.0).max(20.0)
+        widget::row::with_capacity(2)
+            .spacing(8)
+            .align_y(Vertical::Center)
+            .push(art)
+            .push(text_col)
+            .into()
     }
 
     fn popup_playing(&self) -> Element<'_, Message> {

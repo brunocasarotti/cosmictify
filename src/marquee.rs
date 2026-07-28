@@ -9,25 +9,23 @@ use cosmic::widget::{self, space};
 use std::time::{Duration, Instant};
 
 /// Visible width of the scrolling text region in the panel (px).
-pub const VIEWPORT_WIDTH: f32 = 160.0;
-/// Approximate line height reserved for marquee text (px).
-pub const LINE_HEIGHT: f32 = 18.0;
+pub const VIEWPORT_WIDTH: f32 = 168.0;
+/// Line box height for marquee text (fits XS panel with 24px art).
+pub const LINE_HEIGHT: f32 = 16.0;
 /// Gap between looped copies of the text.
-pub const LOOP_GAP: f32 = 48.0;
+pub const LOOP_GAP: f32 = 40.0;
 /// Scroll speed in pixels per second.
-pub const SPEED_PX_PER_SEC: f32 = 40.0;
+pub const SPEED_PX_PER_SEC: f32 = 42.0;
 /// Pause at the start of each loop before scrolling.
-pub const START_PAUSE: Duration = Duration::from_millis(800);
+pub const START_PAUSE: Duration = Duration::from_millis(700);
 /// Approximate average glyph advance for body text (px).
-const AVG_CHAR_WIDTH: f32 = 7.0;
+const AVG_CHAR_WIDTH: f32 = 6.8;
 
 /// State driving the panel marquee.
 #[derive(Debug, Clone)]
 pub struct Marquee {
     text: String,
-    /// When the current track's marquee cycle began.
     started_at: Instant,
-    /// Estimated full text width in px.
     text_width: f32,
 }
 
@@ -62,7 +60,6 @@ impl Marquee {
         self.text_width > VIEWPORT_WIDTH + 4.0
     }
 
-    /// Horizontal shift in px (content moves left).
     pub fn offset_px(&self) -> f32 {
         if !self.needs_scroll() || self.text.is_empty() {
             return 0.0;
@@ -72,20 +69,14 @@ impl Marquee {
             return 0.0;
         }
         let moving = (elapsed - START_PAUSE).as_secs_f32();
-        let period = self.loop_period_px();
+        let period = self.text_width + LOOP_GAP;
         if period <= 0.0 {
             return 0.0;
         }
         (moving * SPEED_PX_PER_SEC) % period
     }
 
-    fn loop_period_px(&self) -> f32 {
-        self.text_width + LOOP_GAP
-    }
-
-    /// Build the marquee widget.
-    ///
-    /// `make_text` should produce panel-styled text (prefer `applet.text` + `Wrapping::None`).
+    /// `make_text` should return single-line text (`Wrapping::None`).
     pub fn view<'a, Message: 'a>(
         &'a self,
         make_text: impl Fn(&str) -> Element<'a, Message>,
@@ -108,7 +99,6 @@ impl Marquee {
 
         let offset = self.offset_px();
         let gap = space::horizontal().width(Length::Fixed(LOOP_GAP));
-        // Two copies + gap → seamless loop when clipped.
         let row = widget::row::with_capacity(3)
             .align_y(cosmic::iced::Alignment::Center)
             .push(make_text(&self.text))

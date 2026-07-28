@@ -132,24 +132,22 @@ impl cosmic::Application for AppModel {
             self.panel_offline()
         };
 
-        let pad = self.core.applet.suggested_padding(true).0;
+        let (h_pad, _v_pad) = self.core.applet.suggested_padding(true);
         let button = widget::button::custom(content)
-            .padding([0, pad])
+            .padding([0, h_pad])
             .class(cosmic::theme::Button::AppletIcon);
 
-        // Panel windows default to icon-sized bounds; autosize expands width for text.
-        // Keep height capped to the panel so multi-line content cannot thicken the bar.
         let interactive = widget::mouse_area(button)
             .on_press(Message::TogglePopup)
             .on_middle_press(Message::PlayPause)
             .on_scroll(Message::Scroll);
 
-        let (_sw, sh) = self.core.applet.suggested_window_size();
-        let panel_h = sh.get() as f32;
-
+        // Width grows with cover+marquee; height stays exactly the panel thickness.
+        let panel_h = self.panel_height();
         self.core
             .applet
             .autosize_window(interactive)
+            .min_height(panel_h)
             .max_height(panel_h)
             .auto_height(false)
             .into()
@@ -366,17 +364,22 @@ impl AppModel {
     }
 
     fn panel_offline(&self) -> Element<'_, Message> {
-        let (w, _h) = self.core.applet.suggested_size(true);
-        widget::icon::from_name("multimedia-player-symbolic")
-            .size(w)
-            .symbolic(true)
-            .icon()
-            .into()
+        let panel_h = self.panel_height();
+        let icon = self.art_pixel_size().round() as u16;
+        widget::container(
+            widget::icon::from_name("multimedia-player-symbolic")
+                .size(icon)
+                .symbolic(true)
+                .icon(),
+        )
+        .height(Length::Fixed(panel_h))
+        .align_y(Vertical::Center)
+        .into()
     }
 
     fn panel_playing(&self) -> Element<'_, Message> {
-        let (icon_w, icon_h) = self.core.applet.suggested_size(true);
-        let art_size = f32::from(icon_w.max(icon_h).max(16));
+        let panel_h = self.panel_height();
+        let art_size = self.art_pixel_size();
 
         let art: Element<'_, Message> = if let Some(handle) = &self.album_art {
             widget::image(handle.clone())
@@ -385,13 +388,13 @@ impl AppModel {
                 .into()
         } else {
             widget::icon::from_name("multimedia-player-symbolic")
-                .size(icon_w)
+                .size(art_size.round() as u16)
                 .symbolic(true)
                 .icon()
                 .into()
         };
 
-        // Use applet-styled single-line text (Wrapping::None → marquee, not multi-line growth).
+        // Single-line applet text → horizontal marquee, never grows panel height.
         let marquee = self.marquee.view(|s| {
             self.core
                 .applet
@@ -408,10 +411,6 @@ impl AppModel {
             .push(marquee)
             .push(bar);
 
-        // Center within panel height; never request more than icon row height.
-        let (icon_w2, icon_h2) = self.core.applet.suggested_size(true);
-        let row_h = f32::from(icon_h2.max(icon_w2));
-
         widget::container(
             widget::row::with_capacity(2)
                 .spacing(8)
@@ -419,9 +418,35 @@ impl AppModel {
                 .push(art)
                 .push(text_col),
         )
-        .height(Length::Fixed(row_h))
+        .height(Length::Fixed(panel_h))
         .align_y(Vertical::Center)
+        .clip(true)
         .into()
+    }
+
+    /// Full panel thickness (logical px) — never exceed this.
+    fn panel_height(&self) -> f32 {
+        if let Some(bounds) = self.core.applet.suggested_bounds {
+            if bounds.height > 8.0 {
+                return bounds.height;
+            }
+        }
+        let (_w, sh) = self.core.applet.suggested_window_size();
+        let h = sh.get() as f32;
+        if h > 8.0 {
+            h
+        } else {
+            // Fallback before panel configures bounds (typical COSMIC S/M panel).
+            32.0
+        }
+    }
+
+    /// Album art size: fill most of the panel height (not the tiny symbolic icon size).
+    fn art_pixel_size(&self) -> f32 {
+        let panel_h = self.panel_height();
+        let (full_w, _) = self.core.applet.suggested_size(false);
+        let from_panel = (panel_h - 6.0).clamp(20.0, 40.0);
+        from_panel.max(f32::from(full_w)).min(panel_h - 2.0).max(20.0)
     }
 
     fn popup_playing(&self) -> Element<'_, Message> {

@@ -9,15 +9,17 @@ use cosmic::widget::{self, space};
 use std::time::{Duration, Instant};
 
 /// Visible width of the scrolling text region in the panel (px).
-pub const VIEWPORT_WIDTH: f32 = 148.0;
+pub const VIEWPORT_WIDTH: f32 = 160.0;
+/// Approximate line height reserved for marquee text (px).
+pub const LINE_HEIGHT: f32 = 18.0;
 /// Gap between looped copies of the text.
 pub const LOOP_GAP: f32 = 48.0;
 /// Scroll speed in pixels per second.
-pub const SPEED_PX_PER_SEC: f32 = 36.0;
+pub const SPEED_PX_PER_SEC: f32 = 40.0;
 /// Pause at the start of each loop before scrolling.
-pub const START_PAUSE: Duration = Duration::from_millis(900);
+pub const START_PAUSE: Duration = Duration::from_millis(800);
 /// Approximate average glyph advance for body text (px).
-const AVG_CHAR_WIDTH: f32 = 7.2;
+const AVG_CHAR_WIDTH: f32 = 7.0;
 
 /// State driving the panel marquee.
 #[derive(Debug, Clone)]
@@ -83,7 +85,7 @@ impl Marquee {
 
     /// Build the marquee widget.
     ///
-    /// `make_text` should produce panel-styled text (prefer `applet.text`).
+    /// `make_text` should produce panel-styled text (prefer `applet.text` + `Wrapping::None`).
     pub fn view<'a, Message: 'a>(
         &'a self,
         make_text: impl Fn(&str) -> Element<'a, Message>,
@@ -91,13 +93,14 @@ impl Marquee {
         if self.text.is_empty() {
             return widget::container(space::horizontal())
                 .width(Length::Fixed(VIEWPORT_WIDTH))
+                .height(Length::Fixed(LINE_HEIGHT))
                 .into();
         }
 
         if !self.needs_scroll() {
             return widget::container(make_text(&self.text))
                 .width(Length::Fixed(VIEWPORT_WIDTH))
-                .height(Length::Shrink)
+                .height(Length::Fixed(LINE_HEIGHT))
                 .align_y(cosmic::iced::Alignment::Center)
                 .clip(true)
                 .into();
@@ -105,6 +108,7 @@ impl Marquee {
 
         let offset = self.offset_px();
         let gap = space::horizontal().width(Length::Fixed(LOOP_GAP));
+        // Two copies + gap → seamless loop when clipped.
         let row = widget::row::with_capacity(3)
             .align_y(cosmic::iced::Alignment::Center)
             .push(make_text(&self.text))
@@ -113,7 +117,7 @@ impl Marquee {
 
         widget::container(row)
             .width(Length::Fixed(VIEWPORT_WIDTH))
-            .height(Length::Shrink)
+            .height(Length::Fixed(LINE_HEIGHT))
             .align_y(cosmic::iced::Alignment::Center)
             .clip(true)
             .padding(Padding {

@@ -479,10 +479,12 @@ mod tests {
         // prior test run and returns Corrupt (because the binary envelope
         // is meaningless gibberish). Both are acceptable here — what we
         // need to prove is that the load path *never* returns Ok with a
-        // bogus token and never panics.
+        // bogus token and never panics. A headless/locked Secret Service
+        // backend may instead report Unavailable, which is also valid for
+        // this non-mutating integration probe.
         let result = store.load();
         match result {
-            Err(KeyringError::Missing) | Err(KeyringError::Corrupt) => {}
+            Err(KeyringError::Missing) | Err(KeyringError::Corrupt) | Err(KeyringError::Unavailable) => {}
             Err(other) => panic!(
                 "unexpected error category from missing-entry load: {other:?}"
             ),

@@ -139,12 +139,16 @@ pub enum Message {
     SpotifyRestore,
     /// Spotify Web API: toggle the like state for the current track.
     SpotifyLikeToggle,
-    /// Spotify Web API: result of a library contains check.
-    SpotifyLikeCheckResult(Result<bool, SpotifyApiError>),
+    /// Spotify Web API: result of a library contains check for one track.
+    SpotifyLikeCheckResult {
+        track_id: String,
+        result: Result<bool, SpotifyApiError>,
+    },
     /// Spotify Web API: result of a library save/remove. `saved` is the
     /// confirmed target state, retained so we do not immediately overwrite a
     /// successful mutation with an eventually-consistent follow-up read.
     SpotifyLikeDone {
+        track_id: String,
         saved: bool,
         result: Result<(), SpotifyApiError>,
     },
@@ -434,16 +438,21 @@ impl cosmic::Application for AppModel {
                 self.spotify_like = LikeState::Unavailable;
                 self.spotify_like_track = None;
             }
-            Message::SpotifyLikeCheckResult(result) => match result {
-                Ok(saved) => {
-                    self.spotify_error = None;
-                    self.spotify_like = if saved { LikeState::Saved } else { LikeState::Unsaved };
+            Message::SpotifyLikeCheckResult { track_id, result } => {
+                if !result_matches_current_track(self.track.track_id.as_deref(), &track_id) {
+                    return Task::none();
                 }
-                Err(error) => {
-                    self.spotify_error = Some(spotify_error_message(&error));
-                    self.spotify_like = LikeState::Error;
+                match result {
+                    Ok(saved) => {
+                        self.spotify_error = None;
+                        self.spotify_like = if saved { LikeState::Saved } else { LikeState::Unsaved };
+                    }
+                    Err(error) => {
+                        self.spotify_error = Some(spotify_error_message(&error));
+                        self.spotify_like = LikeState::Error;
+                    }
                 }
-            },
+            }
             Message::SpotifyLikeToggle => {
                 let Some(track_id) = self.track.track_id.clone() else {
                     return Task::none();
@@ -453,6 +462,7 @@ impl cosmic::Application for AppModel {
                 };
                 let should_save = self.spotify_like != LikeState::Saved;
                 let client_id = client.client_id().to_owned();
+                let result_track_id = track_id.clone();
                 self.spotify_like = LikeState::Mutating;
                 return Task::perform(
                     async move {
@@ -471,22 +481,32 @@ impl cosmic::Application for AppModel {
                     },
                     move |result| {
                         cosmic::Action::App(Message::SpotifyLikeDone {
+                            track_id: result_track_id,
                             saved: should_save,
                             result,
                         })
                     },
                 );
             }
-            Message::SpotifyLikeDone { saved, result } => match result {
-                Ok(()) => {
-                    self.spotify_error = None;
-                    self.spotify_like = if saved { LikeState::Saved } else { LikeState::Unsaved };
+            Message::SpotifyLikeDone {
+                track_id,
+                saved,
+                result,
+            } => {
+                if !result_matches_current_track(self.track.track_id.as_deref(), &track_id) {
+                    return Task::none();
                 }
-                Err(error) => {
-                    self.spotify_error = Some(spotify_error_message(&error));
-                    self.spotify_like = LikeState::Error;
+                match result {
+                    Ok(()) => {
+                        self.spotify_error = None;
+                        self.spotify_like = if saved { LikeState::Saved } else { LikeState::Unsaved };
+                    }
+                    Err(error) => {
+                        self.spotify_error = Some(spotify_error_message(&error));
+                        self.spotify_like = LikeState::Error;
+                    }
                 }
-            },
+            }
             _ => {}
         }
         Task::none()
@@ -590,6 +610,12 @@ impl AppModel {
         let track_changed = self.track.track_id != snap.track_id;
         self.track = snap;
 
+        if track_changed {
+            self.spotify_error = None;
+            self.spotify_like = LikeState::Unavailable;
+            self.spotify_like_track = None;
+        }
+
         if self.track.connected {
             self.marquee.set_text(self.track.display_line());
         } else {
@@ -631,6 +657,7 @@ impl AppModel {
         };
 
         let client_id = client.client_id().to_owned();
+        let result_track_id = track_id.clone();
         self.spotify_like = LikeState::Loading;
         self.spotify_like_track = Some(track_id.clone());
         Task::perform(
@@ -647,7 +674,12 @@ impl AppModel {
                 .await
                 .unwrap_or(Err(SpotifyApiError::Transport("library_task_failed")))
             },
-            |result| cosmic::Action::App(Message::SpotifyLikeCheckResult(result)),
+            move |result| {
+                cosmic::Action::App(Message::SpotifyLikeCheckResult {
+                    track_id: result_track_id,
+                    result,
+                })
+            },
         )
     }
 
@@ -971,14 +1003,14 @@ impl AppModel {
             widget::button::custom(heart)
         };
 
-        let btn = if enabled {
-            btn.on_press(Message::SpotifyLikeToggle)
-        } else {
-            btn
-        };
-
         Some(btn.into())
     }
+}
+
+/// True only if an asynchronous library result still belongs to the track
+/// currently displayed by the popup.
+fn result_matches_current_track(current_track_id: Option<&str>, result_track_id: &str) -> bool {
+    current_track_id == Some(result_track_id)
 }
 
 fn progress_bar<'a>(fraction: f64, width: f32, height: f32) -> Element<'a, Message> {
@@ -1088,4 +1120,16 @@ fn run_oauth_flow(client_id: &str) -> Result<(), SpotifyApiError> {
     // Tokens are persisted by `exchange_code` via `set_tokens`.
     let _ = tokens;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::result_matches_current_track;
+
+    #[test]
+    fn library_result_only_applies_to_the_current_track() {
+        assert!(result_matches_current_track(Some("current"), "current"));
+        assert!(!result_matches_current_track(Some("current"), "stale"));
+        assert!(!result_matches_current_track(None, "stale"));
+    }
 }

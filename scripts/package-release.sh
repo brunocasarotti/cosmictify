@@ -164,7 +164,11 @@ fi
 
 (
   cd "$DIST"
-  sha256sum ./*.tar.gz ./*.deb 2>/dev/null > SHA256SUMS || true
+  files=("$(basename "$TARBALL")")
+  if [[ -f "$(basename "$DIST/${DEB_NAME}.deb")" ]]; then
+    files+=("$(basename "$DIST/${DEB_NAME}.deb")")
+  fi
+  sha256sum "${files[@]}" > SHA256SUMS
   echo "Wrote $DIST/SHA256SUMS"
 )
 

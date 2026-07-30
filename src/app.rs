@@ -5,6 +5,10 @@ use crate::config::Config;
 use crate::fl;
 use crate::marquee::Marquee;
 use crate::mpris::{self, format_duration, MprisCommand, PlaybackStatus, TrackSnapshot};
+use crate::spotify::{
+    self, LoopbackError, OAuthState, PkceVerifier, SecretServiceTokenStore, SpotifyApiError,
+    SpotifyClient, TokenStore,
+};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::mouse::ScrollDelta;
@@ -24,27 +28,67 @@ const POPUP_ART: u16 = 128;
 const SPOTIFY_GREEN: [f32; 4] = [0.114, 0.725, 0.329, 1.0];
 const PANEL_PROGRESS_WIDTH: f32 = crate::marquee::VIEWPORT_WIDTH;
 
+/// Authentication state with the Spotify Web API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthState {
+    /// No Client ID configured yet.
+    Unconfigured,
+    /// Client ID is set but no OAuth tokens have been exchanged.
+    Disconnected,
+    /// OAuth flow is in progress (browser open, waiting for callback).
+    Connecting,
+    /// Tokens are valid and the API is usable.
+    Connected,
+    /// Refresh failed — user needs to re-authorize.
+    ReconnectRequired,
+}
+
+/// Like state for the current track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LikeState {
+    /// No track ID available, or user not authenticated.
+    Unavailable,
+    /// Checking the library for this track.
+    Loading,
+    /// Track is saved in the user's library.
+    Saved,
+    /// Track is not saved in the user's library.
+    Unsaved,
+    /// Save or remove is in progress.
+    Mutating,
+    /// The last operation failed.
+    Error,
+}
+
 pub struct AppModel {
     core: cosmic::Core,
+    /// Cosmic config handle for reading/writing app settings.
+    cosmic_config: Option<cosmic_config::Config>,
     popup: Option<Id>,
     config: Config,
     track: TrackSnapshot,
-    /// Wall-clock when `track.position` was sampled (smooth progress while playing).
     position_sampled_at: Instant,
     album_art: Option<Handle>,
     current_art_url: Option<String>,
-    /// Suppress MPRIS volume overwrite briefly after local drag.
     volume_override: Option<(f64, Instant)>,
-    /// Scrolling "title — artist" in the panel.
     marquee: Marquee,
-    /// Bumped on each tick so iced redraws the time-based marquee/progress.
     frame: u64,
+    spotify_auth: AuthState,
+    spotify_like: LikeState,
+    /// Safe, localized category for the last Spotify Web API error.
+    spotify_error: Option<String>,
+    spotify_like_track: Option<String>,
+    spotify_client: Option<SpotifyClient<SecretServiceTokenStore>>,
+    spotify_connect_state: Option<(PkceVerifier, OAuthState)>,
+    /// Buffer for the Client ID text input field.
+    spotify_client_id_input: String,
 }
 
 impl Default for AppModel {
     fn default() -> Self {
         Self {
             core: cosmic::Core::default(),
+            cosmic_config: None,
             popup: None,
             config: Config::default(),
             track: TrackSnapshot::default(),
@@ -54,6 +98,13 @@ impl Default for AppModel {
             volume_override: None,
             marquee: Marquee::default(),
             frame: 0,
+            spotify_auth: AuthState::Unconfigured,
+            spotify_like: LikeState::Unavailable,
+            spotify_error: None,
+            spotify_like_track: None,
+            spotify_client: None,
+            spotify_connect_state: None,
+            spotify_client_id_input: String::new(),
         }
     }
 }
@@ -78,6 +129,29 @@ pub enum Message {
     },
     CommandDone,
     Scroll(ScrollDelta),
+    /// Spotify Web API: begin OAuth PKCE flow.
+    SpotifyConnect,
+    /// Spotify Web API: disconnect and clear credentials.
+    SpotifyDisconnect,
+    /// Spotify Web API: PKCE callback completed (authorization code or error).
+    SpotifyCallbackDone(Result<(), SpotifyApiError>),
+    /// Spotify Web API: restore session from keyring or start fresh.
+    SpotifyRestore,
+    /// Spotify Web API: toggle the like state for the current track.
+    SpotifyLikeToggle,
+    /// Spotify Web API: result of a library contains check.
+    SpotifyLikeCheckResult(Result<bool, SpotifyApiError>),
+    /// Spotify Web API: result of a library save/remove. `saved` is the
+    /// confirmed target state, retained so we do not immediately overwrite a
+    /// successful mutation with an eventually-consistent follow-up read.
+    SpotifyLikeDone {
+        saved: bool,
+        result: Result<(), SpotifyApiError>,
+    },
+    /// Spotify Web API: text input for Client ID field.
+    SpotifyClientIdInput(String),
+    /// Spotify Web API: save the Client ID from the input buffer to config.
+    SpotifySaveClientId,
 }
 
 impl cosmic::Application for AppModel {
@@ -99,18 +173,20 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        let config = cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-            .map(|context| match Config::get_entry(&context) {
-                Ok(config) => config,
-                Err((_errors, config)) => config,
-            })
-            .unwrap_or_default();
+        let cosmic_cfg = cosmic_config::Config::new(Self::APP_ID, Config::VERSION).ok();
+        let config = cosmic_cfg.as_ref().map(|context| match Config::get_entry(context) {
+            Ok(config) => config,
+            Err((_errors, config)) => config,
+        }).unwrap_or_default();
 
-        let app = AppModel {
+        let mut app = AppModel {
             core,
-            config,
+            cosmic_config: cosmic_cfg,
+            config: config.clone(),
+            spotify_client_id_input: config.spotify_client_id.clone(),
             ..Default::default()
         };
+        app.init_spotify();
 
         (
             app,
@@ -165,19 +241,24 @@ impl cosmic::Application for AppModel {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let content: Element<'_, Message> = if !self.track.connected {
-            widget::column::with_capacity(2)
-                .spacing(12)
-                .padding(16)
-                .push(widget::text::title4(fl!("offline")))
-                .push(widget::text::body(fl!("nothing-playing")))
-                .width(Length::Fixed(320.0))
-                .into()
-        } else {
-            self.popup_playing()
-        };
+        let mut col = widget::column::with_capacity(4)
+            .spacing(8)
+            .padding(12)
+            .width(Length::Fixed(340.0));
 
-        self.core.applet.popup_container(content).into()
+        // Keep this visible after connection so the user can disconnect or
+        // retry without needing to clear configuration manually.
+        col = col.push(self.spotify_setup_section());
+
+        // --- Player section ---
+        if self.track.connected {
+            col = col.push(self.popup_playing());
+        } else {
+            col = col.push(widget::text::title4(fl!("offline")))
+                .push(widget::text::body(fl!("nothing-playing")));
+        }
+
+        self.core.applet.popup_container(col).into()
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
@@ -192,9 +273,6 @@ impl cosmic::Application for AppModel {
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
-            Message::UpdateConfig(config) => {
-                self.config = config;
-            }
             Message::TogglePopup => {
                 return if let Some(p) = self.popup.take() {
                     destroy_popup(p)
@@ -285,6 +363,131 @@ impl cosmic::Application for AppModel {
                     cosmic::Action::App(Message::MprisUpdate(snap))
                 });
             }
+            // --- Spotify Web API ---
+            Message::UpdateConfig(config) => {
+                let client_id_changed = self.config.spotify_client_id != config.spotify_client_id;
+                self.config = config;
+                self.spotify_client_id_input = self.config.spotify_client_id.clone();
+                if client_id_changed {
+                    self.init_spotify();
+                }
+            }
+            Message::SpotifyClientIdInput(s) => {
+                self.spotify_client_id_input = s;
+            }
+            Message::SpotifySaveClientId => {
+                let id = self.spotify_client_id_input.trim().to_string();
+                // Refresh tokens are bound to the OAuth client. Reusing a
+                // token issued for a previous personal Developer App would
+                // either fail mysteriously or connect the wrong app, so clear
+                // it before accepting a different Client ID.
+                if id != self.config.spotify_client_id {
+                    if let Some(client) = self.spotify_client.as_ref() {
+                        let _ = client.store().delete();
+                    }
+                }
+                if let Some(ctx) = &self.cosmic_config {
+                    let mut new_config = self.config.clone();
+                    new_config.spotify_client_id = id;
+                    let _ = new_config.write_entry(ctx);
+                }
+                self.config.spotify_client_id = self.spotify_client_id_input.trim().to_string();
+                self.init_spotify();
+            }
+            Message::SpotifyConnect => {
+                let Some(client) = self.spotify_client.as_ref() else {
+                    return Task::none();
+                };
+                let client_id = client.client_id().to_owned();
+                self.spotify_auth = AuthState::Connecting;
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || run_oauth_flow(&client_id))
+                            .await
+                            .unwrap_or(Err(SpotifyApiError::Transport("oauth_task_failed")))
+                    },
+                    |result| cosmic::Action::App(Message::SpotifyCallbackDone(result)),
+                );
+            }
+            Message::SpotifyCallbackDone(result) => {
+                match result {
+                    Ok(()) => {
+                        self.spotify_auth = AuthState::Connected;
+                        return self.start_like_check();
+                    }
+                    Err(_) => self.spotify_auth = AuthState::ReconnectRequired,
+                }
+            }
+            Message::SpotifyRestore => {
+                self.init_spotify();
+                return self.start_like_check();
+            }
+            Message::SpotifyDisconnect => {
+                if let Some(client) = self.spotify_client.as_ref() {
+                    let _ = client.store().delete();
+                }
+                self.spotify_auth = if self.spotify_client.is_some() {
+                    AuthState::Disconnected
+                } else {
+                    AuthState::Unconfigured
+                };
+                self.spotify_like = LikeState::Unavailable;
+                self.spotify_like_track = None;
+            }
+            Message::SpotifyLikeCheckResult(result) => match result {
+                Ok(saved) => {
+                    self.spotify_error = None;
+                    self.spotify_like = if saved { LikeState::Saved } else { LikeState::Unsaved };
+                }
+                Err(error) => {
+                    self.spotify_error = Some(spotify_error_message(&error));
+                    self.spotify_like = LikeState::Error;
+                }
+            },
+            Message::SpotifyLikeToggle => {
+                let Some(track_id) = self.track.track_id.clone() else {
+                    return Task::none();
+                };
+                let Some(client) = self.spotify_client.as_ref() else {
+                    return Task::none();
+                };
+                let should_save = self.spotify_like != LikeState::Saved;
+                let client_id = client.client_id().to_owned();
+                self.spotify_like = LikeState::Mutating;
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let store = SecretServiceTokenStore::new();
+                            let tokens = store.load().map_err(|_| SpotifyApiError::Refresh("keyring_load_failed"))?;
+                            let client = SpotifyClient::new(client_id, store).with_tokens(tokens);
+                            if should_save {
+                                client.library_save(&track_id)
+                            } else {
+                                client.library_remove(&track_id)
+                            }
+                        })
+                        .await
+                        .unwrap_or(Err(SpotifyApiError::Transport("library_task_failed")))
+                    },
+                    move |result| {
+                        cosmic::Action::App(Message::SpotifyLikeDone {
+                            saved: should_save,
+                            result,
+                        })
+                    },
+                );
+            }
+            Message::SpotifyLikeDone { saved, result } => match result {
+                Ok(()) => {
+                    self.spotify_error = None;
+                    self.spotify_like = if saved { LikeState::Saved } else { LikeState::Unsaved };
+                }
+                Err(error) => {
+                    self.spotify_error = Some(spotify_error_message(&error));
+                    self.spotify_like = LikeState::Error;
+                }
+            },
+            _ => {}
         }
         Task::none()
     }
@@ -295,6 +498,36 @@ impl cosmic::Application for AppModel {
 }
 
 impl AppModel {
+    /// Initialize or reinitialize the Spotify client from the current config.
+    fn init_spotify(&mut self) {
+        let client_id = self.config.spotify_client_id.trim().to_string();
+        if client_id.is_empty() {
+            self.spotify_auth = AuthState::Unconfigured;
+            self.spotify_client = None;
+            self.spotify_like = LikeState::Unavailable;
+            return;
+        }
+        if spotify::validate_client_id(&client_id).is_err() {
+            self.spotify_auth = AuthState::Unconfigured;
+            self.spotify_client = None;
+            self.spotify_like = LikeState::Unavailable;
+            return;
+        }
+
+        let store = SecretServiceTokenStore::new();
+        match store.load() {
+            Ok(tokens) => {
+                self.spotify_client = Some(SpotifyClient::new(client_id, store).with_tokens(tokens));
+                self.spotify_auth = AuthState::Connected;
+            }
+            Err(_) => {
+                self.spotify_client = Some(SpotifyClient::new(client_id, store));
+                self.spotify_auth = AuthState::Disconnected;
+            }
+        }
+        self.spotify_like = LikeState::Unavailable;
+    }
+
     fn estimated_position(&self) -> Duration {
         let base = self.track.position;
         if self.track.status.is_playing() {
@@ -354,12 +587,21 @@ impl AppModel {
             self.position_sampled_at = Instant::now();
         }
 
+        let track_changed = self.track.track_id != snap.track_id;
         self.track = snap;
 
         if self.track.connected {
             self.marquee.set_text(self.track.display_line());
         } else {
             self.marquee.clear();
+        }
+
+        // Start the library lookup before loading album art. Both tasks are
+        // asynchronous, but `Task::perform` returns immediately; returning
+        // from the artwork branch first used to skip this lookup permanently
+        // for the first snapshot of every track.
+        if track_changed && self.spotify_auth == AuthState::Connected {
+            return self.start_like_check();
         }
 
         if art_changed {
@@ -372,6 +614,41 @@ impl AppModel {
         }
 
         Task::none()
+    }
+
+    /// Query the saved-library state for the currently playing Spotify track.
+    /// The task uses a new client populated from the Secret Service token so it
+    /// never moves the app model's non-cloneable HTTP client onto a worker.
+    fn start_like_check(&mut self) -> Task<cosmic::Action<Message>> {
+        let Some(track_id) = self.track.track_id.clone() else {
+            self.spotify_like = LikeState::Unavailable;
+            self.spotify_like_track = None;
+            return Task::none();
+        };
+        let Some(client) = self.spotify_client.as_ref() else {
+            self.spotify_like = LikeState::Unavailable;
+            return Task::none();
+        };
+
+        let client_id = client.client_id().to_owned();
+        self.spotify_like = LikeState::Loading;
+        self.spotify_like_track = Some(track_id.clone());
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let store = SecretServiceTokenStore::new();
+                    let tokens = store
+                        .load()
+                        .map_err(|_| SpotifyApiError::Refresh("keyring_load_failed"))?;
+                    SpotifyClient::new(client_id, store)
+                        .with_tokens(tokens)
+                        .library_contains(&track_id)
+                })
+                .await
+                .unwrap_or(Err(SpotifyApiError::Transport("library_task_failed")))
+            },
+            |result| cosmic::Action::App(Message::SpotifyLikeCheckResult(result)),
+        )
     }
 
     fn panel_offline(&self) -> Element<'_, Message> {
@@ -414,7 +691,7 @@ impl AppModel {
                 .into()
         });
 
-        // Thin progress under the marquee (still one visual “line” next to the cover).
+        // Thin progress under the marquee (still one visual "line" next to the cover).
         let progress = self.estimated_progress();
         let bar = progress_bar(progress, PANEL_PROGRESS_WIDTH, 2.0);
 
@@ -451,12 +728,12 @@ impl AppModel {
         };
 
         let title_text = if self.track.title.is_empty() {
-            "—"
+            "\u{2014}"
         } else {
             self.track.title.as_str()
         };
         let artist_text = if self.track.artist.is_empty() {
-            "—"
+            "\u{2014}"
         } else {
             self.track.artist.as_str()
         };
@@ -530,19 +807,177 @@ impl AppModel {
             )
             .into();
 
+        // --- Like button ---
+        let like_btn: Option<Element<'_, Message>> = self.like_button();
+
         let footer = widget::button::standard(fl!("open-spotify")).on_press(Message::OpenInSpotify);
 
-        widget::column::with_capacity(6)
-            .spacing(12)
-            .padding(16)
-            .width(Length::Fixed(340.0))
+        let mut player = widget::column::with_capacity(7)
+            .spacing(10)
             .push(header)
             .push(time_row)
             .push(seek)
             .push(controls)
-            .push(volume)
-            .push(footer)
-            .into()
+            .push(volume);
+
+        if let Some(btn) = like_btn {
+            player = player.push(btn);
+        }
+
+        if let Some(error) = &self.spotify_error {
+            player = player.push(widget::text::caption(error.clone()));
+        }
+
+        player.push(footer).into()
+    }
+
+    /// Build the Spotify setup section for the popup.
+    fn spotify_setup_section(&self) -> Element<'_, Message> {
+        let mut section = widget::column::with_capacity(4).spacing(6);
+
+        if self.spotify_auth == AuthState::Unconfigured {
+            // Show the setup guide + text input
+            section = section
+                .push(widget::text::title4(fl!("spotify-setup")))
+                .push(widget::text::caption(fl!("spotify-howto-1")))
+                .push(widget::text::caption(fl!("spotify-howto-2")))
+                .push(widget::text::caption(fl!("spotify-howto-3")))
+                .push(widget::text::caption(fl!("spotify-howto-4")))
+                .push(widget::text::caption(fl!("spotify-redirect-uri-label")))
+                .push(
+                    widget::text::caption("http://127.0.0.1:43821/callback"),
+                )
+                .push(widget::text::caption(fl!("spotify-howto-5")))
+                .push(widget::text::caption(fl!("spotify-howto-6")))
+                .push(space::vertical().height(Length::Fixed(8.0)))
+                .push(widget::text::caption(fl!("spotify-client-id-label")))
+                .push(
+                    widget::text_input(
+                        fl!("spotify-client-id-placeholder"),
+                        &self.spotify_client_id_input,
+                    )
+                    .on_input(Message::SpotifyClientIdInput)
+                    .label(fl!("spotify-client-id-label")),
+                );
+
+            let can_save = self.spotify_client_id_input.len() == 32
+                && self.spotify_client_id_input.bytes().all(|b| b.is_ascii_hexdigit());
+            if can_save {
+                section = section.push(
+                    widget::button::standard(fl!("spotify-client-id-save"))
+                        .on_press(Message::SpotifySaveClientId),
+                );
+            } else {
+                section = section.push(
+                    widget::button::standard(fl!("spotify-client-id-save")),
+                );
+            }
+        }
+
+        if self.spotify_auth == AuthState::Disconnected {
+            section = section
+                .push(widget::text::caption(fl!("spotify-client-id-label")))
+                .push(
+                    widget::text_input(
+                        fl!("spotify-client-id-placeholder"),
+                        &self.spotify_client_id_input,
+                    )
+                    .on_input(Message::SpotifyClientIdInput)
+                    .label(fl!("spotify-client-id-label")),
+                )
+                .push(
+                    widget::button::standard(fl!("spotify-client-id-save"))
+                        .on_press_maybe(
+                            (self.spotify_client_id_input.len() == 32
+                                && self
+                                    .spotify_client_id_input
+                                    .bytes()
+                                    .all(|byte| byte.is_ascii_hexdigit()))
+                            .then_some(Message::SpotifySaveClientId),
+                        ),
+                )
+                .push(space::vertical().height(Length::Fixed(8.0)))
+                .push(
+                    widget::button::standard(fl!("connect-spotify"))
+                        .on_press(Message::SpotifyConnect),
+                );
+        }
+
+        if self.spotify_auth == AuthState::Connecting {
+            section = section
+                .push(space::vertical().height(Length::Fixed(8.0)))
+                .push(widget::text::body(fl!("spotify-connecting")));
+        }
+
+        if self.spotify_auth == AuthState::ReconnectRequired {
+            section = section
+                .push(space::vertical().height(Length::Fixed(8.0)))
+                .push(
+                    widget::button::standard(fl!("spotify-reconnect"))
+                        .on_press(Message::SpotifyConnect),
+                );
+        }
+
+        if self.spotify_auth == AuthState::Connected {
+            section = section
+                .push(widget::text::body(fl!("spotify-connected")))
+                .push(
+                    widget::button::standard(fl!("spotify-disconnect"))
+                        .on_press(Message::SpotifyDisconnect),
+                );
+        }
+
+        // Simple divider
+        if self.track.connected {
+            section = section.push(
+                widget::container(space::horizontal())
+                    .width(Length::Fill)
+                    .height(Length::Fixed(1.0))
+                    .style(|_: &_| {
+                        let mut style = cosmic::widget::container::Style::default();
+                        style.background = Some(cosmic::iced::Background::Color(
+                            cosmic::iced::Color::from([0.3, 0.3, 0.3, 0.3]),
+                        ));
+                        style
+                    }),
+            );
+        }
+
+        section.into()
+    }
+
+    /// Build the like button for the current track, if applicable.
+    fn like_button(&self) -> Option<Element<'_, Message>> {
+        if self.spotify_auth != AuthState::Connected {
+            return None;
+        }
+        let has_track_id = self.track.track_id.is_some();
+        if !has_track_id {
+            return None;
+        }
+
+        let (heart_text, enabled) = match self.spotify_like {
+            LikeState::Saved => ("\u{2665}", true),
+            LikeState::Unsaved => ("\u{2661}", true),
+            LikeState::Loading | LikeState::Mutating => ("…", false),
+            LikeState::Error => ("⚠", true),
+            LikeState::Unavailable => return None,
+        };
+
+        let heart = widget::text::body(heart_text).size(20);
+        let btn = if enabled {
+            widget::button::custom(heart).on_press(Message::SpotifyLikeToggle)
+        } else {
+            widget::button::custom(heart)
+        };
+
+        let btn = if enabled {
+            btn.on_press(Message::SpotifyLikeToggle)
+        } else {
+            btn
+        };
+
+        Some(btn.into())
     }
 }
 
@@ -591,4 +1026,66 @@ fn run_command(cmd: MprisCommand) -> Task<cosmic::Action<Message>> {
 #[allow(dead_code)]
 fn _status_playing(s: PlaybackStatus) -> bool {
     s.is_playing()
+}
+
+/// Convert a token-safe API error into a localized user-facing category.
+fn spotify_error_message(error: &SpotifyApiError) -> String {
+    match error {
+        SpotifyApiError::Refresh(_) => fl!("spotify-error-auth"),
+        SpotifyApiError::Allowlist(_) => fl!("spotify-error-allowlist"),
+        SpotifyApiError::RateLimited { .. } => fl!("spotify-error-rate-limited"),
+        SpotifyApiError::Transport(_) => fl!("spotify-error-network"),
+        SpotifyApiError::Http { status, .. } => {
+            format!("{} (HTTP {status})", fl!("spotify-error-api"))
+        }
+        SpotifyApiError::Malformed(_) => fl!("spotify-error-api"),
+    }
+}
+
+/// Run the OAuth PKCE authorization flow: bind loopback listener, open browser,
+/// wait for callback, exchange code for tokens, and persist via keyring.
+#[allow(dead_code)]
+fn run_oauth_flow(client_id: &str) -> Result<(), SpotifyApiError> {
+    let verifier = spotify::generate_pkce_verifier();
+    let state = OAuthState::generate();
+    let challenge = verifier.challenge_s256();
+
+    let params = spotify::AuthorizeUrlParams::builder()
+        .client_id(client_id)
+        .state(state.clone())
+        .code_challenge(challenge)
+        .build();
+    let url = spotify::build_authorize_url(params);
+
+    // Bind listener before opening the browser.
+    let listener = spotify::LoopbackListener::bind(
+        spotify::DEFAULT_LOOPBACK_ADDR
+            .parse()
+            .map_err(|_| SpotifyApiError::Transport("bind_failed"))?,
+    )
+    .map_err(|_| SpotifyApiError::Transport("bind_failed"))?;
+
+    // Open the authorization URL in the system browser.
+    let _ = std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn();
+
+    // Wait for the callback (60-second timeout).
+    let auth_code = listener
+        .wait_for_callback(state.as_str(), Duration::from_secs(60))
+        .map_err(|e| match e {
+            LoopbackError::Timeout => SpotifyApiError::Transport("auth_timeout"),
+            LoopbackError::UserDenied => SpotifyApiError::Allowlist("denied"),
+            LoopbackError::StateMismatch => SpotifyApiError::Transport("state_mismatch"),
+            _ => SpotifyApiError::Transport("callback_error"),
+        })?;
+
+    // Exchange the authorization code for tokens.
+    let store = SecretServiceTokenStore::new();
+    let client = SpotifyClient::new(client_id.to_string(), store);
+    let tokens = client.exchange_code(&auth_code, &verifier)?;
+
+    // Tokens are persisted by `exchange_code` via `set_tokens`.
+    let _ = tokens;
+    Ok(())
 }

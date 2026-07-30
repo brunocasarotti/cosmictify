@@ -6,6 +6,7 @@ mod config;
 mod i18n;
 mod marquee;
 mod mpris;
+mod spotify;
 
 fn main() -> cosmic::iced::Result {
     let requested_languages = i18n_embed::DesktopLanguageRequester::requested_languages();

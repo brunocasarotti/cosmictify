@@ -35,6 +35,7 @@ sudo apt install ./cosmictify_*_amd64.deb
 
 1. **Settings → Desktop → Panel → Configure panel applets → Cosmictify**
 2. Ensure Spotify desktop is running
+3. For the upcoming Spotify library like button, see [Enable the Like Button](#enable-the-like-button)
 
 ### Uninstall
 
@@ -65,8 +66,60 @@ just uninstall-local
 - **Shortcuts:** scroll = next/prev · middle-click = play/pause  
 - **Spotify-only MPRIS** (won’t hijack YouTube/browser players or thicken your top bar)  
 - Built with **Rust** + **libcosmic** for native COSMIC look & feel  
+- [Library like (♥) via Spotify Web API](#enable-the-like-button) (upcoming)
 
-> Library **like (♥)** via Spotify Web API (OAuth PKCE) is planned next.
+## Enable the Like Button
+
+> **Status:** The Spotify Web API like button is upcoming. The setup below documents the personal-app flow for that release; it does not change the existing MPRIS feature. MPRIS playback controls work without this setup and do not require Spotify Premium.
+
+Spotify Development Mode does not provide Cosmictify with one shared public app. Each user must create a personal Spotify Developer app because a Development Mode app supports at most **five allowlisted users**, and broader access has a high eligibility threshold. Personal use is fine: the app owner is automatically the owner account; additional test accounts must be added explicitly.
+
+### One-time Spotify Developer setup
+
+1. Sign in to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) with the Spotify account that owns the app. The app owner currently needs an active **Premium** subscription.
+2. Click **Create app**.
+3. Enter a name such as `Cosmictify Personal` and any description.
+4. Select **Web API**.
+5. Add this exact Redirect URI:
+
+   ```text
+   http://127.0.0.1:43821/callback
+   ```
+
+   Do not use `localhost`, change `127.0.0.1`, change the port, or add/remove the trailing slash.
+6. Accept Spotify’s terms, then create/save the app.
+7. Copy only the app’s **Client ID** into Cosmictify. The Client ID is a public identifier.
+8. **Never copy, share, or enter the Client Secret.** Cosmictify does not request or store a Client Secret.
+
+The app owner needs no extra allowlist entry. To test with other accounts, open the app’s **Settings → Users Management** in the Developer Dashboard and add them; Development Mode allows a maximum of five users in total.
+
+### Connect Cosmictify
+
+Once the like-button release is available and the app is installed:
+
+1. Open the Cosmictify popup and choose **Spotify setup**.
+2. Paste the Client ID and choose **Save**.
+3. Choose **Connect Spotify**.
+4. Complete authorization in the system browser and approve the `user-library-read` and `user-library-modify` permissions.
+
+Cosmictify checks the current Spotify track and lets the heart button save or remove it from your Spotify library. The loopback callback is local to your computer; the browser must return to the exact URI above.
+
+### Security and reset
+
+- The Client ID is stored in ordinary Cosmictify configuration because it is not a secret.
+- OAuth access and refresh tokens are stored only in the Linux **Secret Service** (the desktop keyring), not in plain-text configuration. There is no plain-text fallback.
+- MPRIS playback remains independent of Spotify Web API login, so a missing or unavailable keyring does not prevent normal local media controls.
+- To disconnect, use the app’s Spotify disconnect/reset action when available. To switch Developer apps, change or clear the Client ID first: Cosmictify clears tokens tied to the previous app so they cannot be reused with another Client ID.
+- If the like button is not available yet, no Spotify Web API setup is needed; normal MPRIS operation continues as before.
+
+### Troubleshooting
+
+- **Invalid redirect URI:** The Dashboard value must be exactly `http://127.0.0.1:43821/callback`. Replace `localhost`, remove any trailing slash, and check the port before trying again.
+- **`localhost` or port conflict:** `localhost` is not interchangeable with `127.0.0.1` for this setup. Close another process using port `43821`, restart Cosmictify, and retry the connection.
+- **Keyring locked or unavailable:** Unlock/start the Linux Secret Service in your COSMIC session and retry. Cosmictify does not write tokens to a plain-text fallback.
+- **403 account, allowlist, or quota error:** Confirm that the app owner has Premium, that the authorizing account is the app owner or one of the five Users Management entries, and that the app is configured for Web API.
+- **Authorization was revoked:** Disconnect/reset the app connection, then choose **Connect Spotify** again and approve the requested library permissions.
+- **Client Secret requested:** Stop—the setup is incorrect for Cosmictify. Only enter the Client ID; never expose the Client Secret.
 
 ## Build from source
 

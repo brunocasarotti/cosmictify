@@ -159,7 +159,7 @@ Cosmictify talks to the Spotify desktop app over **MPRIS on D-Bus** (same family
 ## Releases for maintainers
 
 ```bash
-just release 0.2.1   # tag + GitHub release with tarball/deb
+just release 0.2.2   # tag + GitHub release with tarball/deb
 ```
 
 CI also builds on `v*` tags (`.github/workflows/release.yml`).
@@ -176,7 +176,7 @@ CI also builds on `v*` tags (`.github/workflows/release.yml`).
 
 ## Status
 
-Daily-driver on Pop!_OS 24.04 COSMIC: MPRIS panel/popup plus optional Spotify library like via personal Developer app (released from **v0.2.0**, patch **v0.2.1**). Current in-tree UI polish: expandable Spotify setup under the popup gear.
+Daily-driver on Pop!_OS 24.04 COSMIC: MPRIS panel/popup plus optional Spotify library like via personal Developer app (**v0.2.2**: expandable Spotify setup under the popup gear).
 
 ## License
 

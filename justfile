@@ -54,8 +54,9 @@ install:
     install -Dm0644 resources/app.metainfo.xml {{appdata-dst}}
     install -Dm0644 resources/icon.svg {{icon-dst}}
 
-# Install into ~/.local (no sudo) for COSMIC panel testing
-install-local:
+# Install into ~/.local (no sudo) for COSMIC panel testing.
+# Always rebuild release first so a stale target/release is never copied.
+install-local: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     prefix="${HOME}/.local"
@@ -66,6 +67,7 @@ install-local:
     # COSMIC looks for applets under share/applications with X-CosmicApplet=true
     gtk-update-icon-cache -f "${prefix}/share/icons/hicolor" 2>/dev/null || true
     echo "Installed to ${prefix}. Add Cosmictify via Settings → Desktop → Panel → Applets."
+    echo "Reload: remove/re-add the applet, or: pkill -x {{name}}"
 
 # Uninstalls installed files
 uninstall:

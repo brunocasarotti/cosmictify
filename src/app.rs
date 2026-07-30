@@ -4,10 +4,10 @@ use crate::art;
 use crate::config::Config;
 use crate::fl;
 use crate::marquee::Marquee;
-use crate::mpris::{self, format_duration, MprisCommand, PlaybackStatus, TrackSnapshot};
+use crate::mpris::{self, format_duration, MprisCommand, TrackSnapshot};
 use crate::spotify::{
-    self, LoopbackError, OAuthState, PkceVerifier, SecretServiceTokenStore, SpotifyApiError,
-    SpotifyClient, TokenStore,
+    self, LoopbackError, OAuthState, SecretServiceTokenStore, SpotifyApiError, SpotifyClient,
+    TokenStore,
 };
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
@@ -65,6 +65,8 @@ pub struct AppModel {
     /// Cosmic config handle for reading/writing app settings.
     cosmic_config: Option<cosmic_config::Config>,
     popup: Option<Id>,
+    /// When true, the popup shows the expandable Spotify setup section.
+    spotify_settings_open: bool,
     config: Config,
     track: TrackSnapshot,
     position_sampled_at: Instant,
@@ -79,7 +81,6 @@ pub struct AppModel {
     spotify_error: Option<String>,
     spotify_like_track: Option<String>,
     spotify_client: Option<SpotifyClient<SecretServiceTokenStore>>,
-    spotify_connect_state: Option<(PkceVerifier, OAuthState)>,
     /// Buffer for the Client ID text input field.
     spotify_client_id_input: String,
 }
@@ -90,6 +91,7 @@ impl Default for AppModel {
             core: cosmic::Core::default(),
             cosmic_config: None,
             popup: None,
+            spotify_settings_open: false,
             config: Config::default(),
             track: TrackSnapshot::default(),
             position_sampled_at: Instant::now(),
@@ -103,7 +105,6 @@ impl Default for AppModel {
             spotify_error: None,
             spotify_like_track: None,
             spotify_client: None,
-            spotify_connect_state: None,
             spotify_client_id_input: String::new(),
         }
     }
@@ -113,6 +114,8 @@ impl Default for AppModel {
 pub enum Message {
     TogglePopup,
     PopupClosed(Id),
+    /// Expand/collapse the Spotify setup section inside the popup.
+    ToggleSpotifySettings,
     UpdateConfig(Config),
     MprisUpdate(TrackSnapshot),
     PollMpris,
@@ -129,14 +132,12 @@ pub enum Message {
     },
     CommandDone,
     Scroll(ScrollDelta),
-    /// Spotify Web API: begin OAuth PKCE flow.
+    /// Spotify Web API: begin OAuth PKCE flow (also persists Client ID from the field).
     SpotifyConnect,
     /// Spotify Web API: disconnect and clear credentials.
     SpotifyDisconnect,
     /// Spotify Web API: PKCE callback completed (authorization code or error).
     SpotifyCallbackDone(Result<(), SpotifyApiError>),
-    /// Spotify Web API: restore session from keyring or start fresh.
-    SpotifyRestore,
     /// Spotify Web API: toggle the like state for the current track.
     SpotifyLikeToggle,
     /// Spotify Web API: result of a library contains check for one track.
@@ -154,8 +155,6 @@ pub enum Message {
     },
     /// Spotify Web API: text input for Client ID field.
     SpotifyClientIdInput(String),
-    /// Spotify Web API: save the Client ID from the input buffer to config.
-    SpotifySaveClientId,
 }
 
 impl cosmic::Application for AppModel {
@@ -245,24 +244,7 @@ impl cosmic::Application for AppModel {
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let mut col = widget::column::with_capacity(4)
-            .spacing(8)
-            .padding(12)
-            .width(Length::Fixed(340.0));
-
-        // Keep this visible after connection so the user can disconnect or
-        // retry without needing to clear configuration manually.
-        col = col.push(self.spotify_setup_section());
-
-        // --- Player section ---
-        if self.track.connected {
-            col = col.push(self.popup_playing());
-        } else {
-            col = col.push(widget::text::title4(fl!("offline")))
-                .push(widget::text::body(fl!("nothing-playing")));
-        }
-
-        self.core.applet.popup_container(col).into()
+        self.view_popup()
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
@@ -279,6 +261,7 @@ impl cosmic::Application for AppModel {
         match message {
             Message::TogglePopup => {
                 return if let Some(p) = self.popup.take() {
+                    self.spotify_settings_open = false;
                     destroy_popup(p)
                 } else {
                     let new_id = Id::unique();
@@ -290,18 +273,23 @@ impl cosmic::Application for AppModel {
                         None,
                         None,
                     );
+                    // Tall enough for the expandable Spotify setup section.
                     popup_settings.positioner.size_limits = Limits::NONE
                         .max_width(380.0)
                         .min_width(320.0)
-                        .min_height(220.0)
-                        .max_height(520.0);
+                        .min_height(180.0)
+                        .max_height(640.0);
                     get_popup(popup_settings)
                 };
             }
             Message::PopupClosed(id) => {
-                if self.popup.as_ref() == Some(&id) {
+                if is_popup_id(self.popup, id) {
                     self.popup = None;
+                    self.spotify_settings_open = false;
                 }
+            }
+            Message::ToggleSpotifySettings => {
+                self.spotify_settings_open = !self.spotify_settings_open;
             }
             Message::PollMpris => {
                 return Task::perform(poll_mpris(), |snap| {
@@ -379,26 +367,13 @@ impl cosmic::Application for AppModel {
             Message::SpotifyClientIdInput(s) => {
                 self.spotify_client_id_input = s;
             }
-            Message::SpotifySaveClientId => {
-                let id = self.spotify_client_id_input.trim().to_string();
-                // Refresh tokens are bound to the OAuth client. Reusing a
-                // token issued for a previous personal Developer App would
-                // either fail mysteriously or connect the wrong app, so clear
-                // it before accepting a different Client ID.
-                if id != self.config.spotify_client_id {
-                    if let Some(client) = self.spotify_client.as_ref() {
-                        let _ = client.store().delete();
-                    }
-                }
-                if let Some(ctx) = &self.cosmic_config {
-                    let mut new_config = self.config.clone();
-                    new_config.spotify_client_id = id;
-                    let _ = new_config.write_entry(ctx);
-                }
-                self.config.spotify_client_id = self.spotify_client_id_input.trim().to_string();
-                self.init_spotify();
-            }
             Message::SpotifyConnect => {
+                // Persist Client ID from the field (if valid), then start OAuth.
+                // One button covers both "save" and "connect".
+                if !self.client_id_input_is_valid() {
+                    return Task::none();
+                }
+                self.save_client_id_from_input();
                 let Some(client) = self.spotify_client.as_ref() else {
                     return Task::none();
                 };
@@ -421,10 +396,6 @@ impl cosmic::Application for AppModel {
                     }
                     Err(_) => self.spotify_auth = AuthState::ReconnectRequired,
                 }
-            }
-            Message::SpotifyRestore => {
-                self.init_spotify();
-                return self.start_like_check();
             }
             Message::SpotifyDisconnect => {
                 if let Some(client) = self.spotify_client.as_ref() {
@@ -507,7 +478,6 @@ impl cosmic::Application for AppModel {
                     }
                 }
             }
-            _ => {}
         }
         Task::none()
     }
@@ -518,6 +488,29 @@ impl cosmic::Application for AppModel {
 }
 
 impl AppModel {
+    fn client_id_input_is_valid(&self) -> bool {
+        let id = self.spotify_client_id_input.trim();
+        id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    /// Persist the Client ID field into cosmic-config and re-init the API client.
+    /// Clears keyring tokens when the Client ID changes (tokens are app-bound).
+    fn save_client_id_from_input(&mut self) {
+        let id = self.spotify_client_id_input.trim().to_string();
+        if id != self.config.spotify_client_id {
+            if let Some(client) = self.spotify_client.as_ref() {
+                let _ = client.store().delete();
+            }
+        }
+        if let Some(ctx) = &self.cosmic_config {
+            let mut new_config = self.config.clone();
+            new_config.spotify_client_id = id.clone();
+            let _ = new_config.write_entry(ctx);
+        }
+        self.config.spotify_client_id = id;
+        self.init_spotify();
+    }
+
     /// Initialize or reinitialize the Spotify client from the current config.
     fn init_spotify(&mut self) {
         let client_id = self.config.spotify_client_id.trim().to_string();
@@ -693,6 +686,60 @@ impl AppModel {
             .into()
     }
 
+    /// Popup content: player controls + gear footer; optional expandable setup.
+    fn view_popup(&self) -> Element<'_, Message> {
+        let mut col = widget::column::with_capacity(5)
+            .spacing(8)
+            .padding(12)
+            .width(Length::Fixed(340.0));
+
+        if self.track.connected {
+            col = col.push(self.popup_playing());
+        } else {
+            col = col
+                .push(widget::text::title4(fl!("offline")))
+                .push(widget::text::body(fl!("nothing-playing")));
+
+            if self.spotify_auth == AuthState::Unconfigured && !self.spotify_settings_open {
+                col = col.push(widget::text::caption(fl!("spotify-settings-hint")));
+            }
+
+            col = col.push(self.popup_settings_footer(false));
+        }
+
+        if self.spotify_settings_open {
+            col = col.push(self.spotify_setup_section());
+        }
+
+        self.core.applet.popup_container(col).into()
+    }
+
+    /// Footer row: optional Open in Spotify on the left, gear on the right.
+    /// Gear toggles the expandable Spotify setup section below.
+    fn popup_settings_footer(&self, show_open_spotify: bool) -> Element<'_, Message> {
+        let gear_icon = if self.spotify_settings_open {
+            "go-up-symbolic"
+        } else {
+            "preferences-system-symbolic"
+        };
+
+        let gear = widget::button::icon(widget::icon::from_name(gear_icon).size(16))
+            .on_press(Message::ToggleSpotifySettings)
+            .tooltip(fl!("spotify-settings-open"));
+
+        let mut row = widget::row::with_capacity(3)
+            .spacing(8)
+            .align_y(Vertical::Center);
+
+        if show_open_spotify {
+            row = row.push(
+                widget::button::standard(fl!("open-spotify")).on_press(Message::OpenInSpotify),
+            );
+        }
+
+        row.push(space::horizontal()).push(gear).into()
+    }
+
     fn panel_playing(&self) -> Element<'_, Message> {
         // Album art: use non-symbolic applet size (XS=24, S=32, …) so cover isn't tiny.
         let (art_px, _) = self.core.applet.suggested_size(false);
@@ -842,8 +889,6 @@ impl AppModel {
         // --- Like button ---
         let like_btn: Option<Element<'_, Message>> = self.like_button();
 
-        let footer = widget::button::standard(fl!("open-spotify")).on_press(Message::OpenInSpotify);
-
         let mut player = widget::column::with_capacity(7)
             .spacing(10)
             .push(header)
@@ -860,15 +905,20 @@ impl AppModel {
             player = player.push(widget::text::caption(error.clone()));
         }
 
-        player.push(footer).into()
+        player
+            .push(self.popup_settings_footer(true))
+            .into()
     }
 
-    /// Build the Spotify setup section for the popup.
+    /// Build the expandable Spotify setup section (shown under the gear).
     fn spotify_setup_section(&self) -> Element<'_, Message> {
-        let mut section = widget::column::with_capacity(4).spacing(6);
+        let mut section = widget::column::with_capacity(6).spacing(6);
 
-        if self.spotify_auth == AuthState::Unconfigured {
-            // Show the setup guide + text input
+        let show_howto = matches!(
+            self.spotify_auth,
+            AuthState::Unconfigured | AuthState::Disconnected
+        );
+        if show_howto {
             section = section
                 .push(widget::text::title4(fl!("spotify-setup")))
                 .push(widget::text::caption(fl!("spotify-howto-1")))
@@ -876,63 +926,31 @@ impl AppModel {
                 .push(widget::text::caption(fl!("spotify-howto-3")))
                 .push(widget::text::caption(fl!("spotify-howto-4")))
                 .push(widget::text::caption(fl!("spotify-redirect-uri-label")))
-                .push(
-                    widget::text::caption("http://127.0.0.1:43821/callback"),
-                )
+                .push(widget::text::caption("http://127.0.0.1:43821/callback"))
                 .push(widget::text::caption(fl!("spotify-howto-5")))
                 .push(widget::text::caption(fl!("spotify-howto-6")))
-                .push(space::vertical().height(Length::Fixed(8.0)))
-                .push(widget::text::caption(fl!("spotify-client-id-label")))
-                .push(
-                    widget::text_input(
-                        fl!("spotify-client-id-placeholder"),
-                        &self.spotify_client_id_input,
-                    )
-                    .on_input(Message::SpotifyClientIdInput)
-                    .label(fl!("spotify-client-id-label")),
-                );
-
-            let can_save = self.spotify_client_id_input.len() == 32
-                && self.spotify_client_id_input.bytes().all(|b| b.is_ascii_hexdigit());
-            if can_save {
-                section = section.push(
-                    widget::button::standard(fl!("spotify-client-id-save"))
-                        .on_press(Message::SpotifySaveClientId),
-                );
-            } else {
-                section = section.push(
-                    widget::button::standard(fl!("spotify-client-id-save")),
-                );
-            }
+                .push(space::vertical().height(Length::Fixed(8.0)));
         }
 
-        if self.spotify_auth == AuthState::Disconnected {
-            section = section
-                .push(widget::text::caption(fl!("spotify-client-id-label")))
-                .push(
-                    widget::text_input(
-                        fl!("spotify-client-id-placeholder"),
-                        &self.spotify_client_id_input,
-                    )
-                    .on_input(Message::SpotifyClientIdInput)
-                    .label(fl!("spotify-client-id-label")),
-                )
-                .push(
-                    widget::button::standard(fl!("spotify-client-id-save"))
-                        .on_press_maybe(
-                            (self.spotify_client_id_input.len() == 32
-                                && self
-                                    .spotify_client_id_input
-                                    .bytes()
-                                    .all(|byte| byte.is_ascii_hexdigit()))
-                            .then_some(Message::SpotifySaveClientId),
-                        ),
-                )
-                .push(space::vertical().height(Length::Fixed(8.0)))
-                .push(
-                    widget::button::standard(fl!("connect-spotify"))
-                        .on_press(Message::SpotifyConnect),
-                );
+        // Client ID field + single Connect action for setup/disconnected states.
+        if matches!(
+            self.spotify_auth,
+            AuthState::Unconfigured | AuthState::Disconnected
+        ) {
+            // Placeholder-only: no separate label (avoids duplicated "Spotify Client ID").
+            let input = widget::text_input(
+                fl!("spotify-client-id-placeholder"),
+                &self.spotify_client_id_input,
+            )
+            .on_input(Message::SpotifyClientIdInput);
+
+            section = section.push(input).push(
+                widget::button::suggested(fl!("connect-spotify"))
+                    .on_press_maybe(
+                        self.client_id_input_is_valid()
+                            .then_some(Message::SpotifyConnect),
+                    ),
+            );
         }
 
         if self.spotify_auth == AuthState::Connecting {
@@ -945,7 +963,7 @@ impl AppModel {
             section = section
                 .push(space::vertical().height(Length::Fixed(8.0)))
                 .push(
-                    widget::button::standard(fl!("spotify-reconnect"))
+                    widget::button::suggested(fl!("spotify-reconnect"))
                         .on_press(Message::SpotifyConnect),
                 );
         }
@@ -957,22 +975,6 @@ impl AppModel {
                     widget::button::standard(fl!("spotify-disconnect"))
                         .on_press(Message::SpotifyDisconnect),
                 );
-        }
-
-        // Simple divider
-        if self.track.connected {
-            section = section.push(
-                widget::container(space::horizontal())
-                    .width(Length::Fill)
-                    .height(Length::Fixed(1.0))
-                    .style(|_: &_| {
-                        let mut style = cosmic::widget::container::Style::default();
-                        style.background = Some(cosmic::iced::Background::Color(
-                            cosmic::iced::Color::from([0.3, 0.3, 0.3, 0.3]),
-                        ));
-                        style
-                    }),
-            );
         }
 
         section.into()
@@ -1011,6 +1013,10 @@ impl AppModel {
 /// currently displayed by the popup.
 fn result_matches_current_track(current_track_id: Option<&str>, result_track_id: &str) -> bool {
     current_track_id == Some(result_track_id)
+}
+
+fn is_popup_id(popup: Option<Id>, closed: Id) -> bool {
+    popup == Some(closed)
 }
 
 fn progress_bar<'a>(fraction: f64, width: f32, height: f32) -> Element<'a, Message> {
@@ -1055,11 +1061,6 @@ fn run_command(cmd: MprisCommand) -> Task<cosmic::Action<Message>> {
     )
 }
 
-#[allow(dead_code)]
-fn _status_playing(s: PlaybackStatus) -> bool {
-    s.is_playing()
-}
-
 /// Convert a token-safe API error into a localized user-facing category.
 fn spotify_error_message(error: &SpotifyApiError) -> String {
     match error {
@@ -1076,7 +1077,6 @@ fn spotify_error_message(error: &SpotifyApiError) -> String {
 
 /// Run the OAuth PKCE authorization flow: bind loopback listener, open browser,
 /// wait for callback, exchange code for tokens, and persist via keyring.
-#[allow(dead_code)]
 fn run_oauth_flow(client_id: &str) -> Result<(), SpotifyApiError> {
     let verifier = spotify::generate_pkce_verifier();
     let state = OAuthState::generate();
@@ -1124,12 +1124,22 @@ fn run_oauth_flow(client_id: &str) -> Result<(), SpotifyApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::result_matches_current_track;
+    use super::{is_popup_id, result_matches_current_track};
+    use cosmic::iced::window::Id;
 
     #[test]
     fn library_result_only_applies_to_the_current_track() {
         assert!(result_matches_current_track(Some("current"), "current"));
         assert!(!result_matches_current_track(Some("current"), "stale"));
         assert!(!result_matches_current_track(None, "stale"));
+    }
+
+    #[test]
+    fn popup_id_match_is_exact() {
+        let popup = Id::unique();
+        let other = Id::unique();
+        assert!(is_popup_id(Some(popup), popup));
+        assert!(!is_popup_id(Some(popup), other));
+        assert!(!is_popup_id(None, popup));
     }
 }

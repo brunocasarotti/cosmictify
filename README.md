@@ -35,7 +35,7 @@ sudo apt install ./cosmictify_*_amd64.deb
 
 1. **Settings → Desktop → Panel → Configure panel applets → Cosmictify**
 2. Ensure Spotify desktop is running
-3. For the upcoming Spotify library like button, see [Enable the Like Button](#enable-the-like-button)
+3. For the Spotify library like button (♥), see [Enable the Like Button](#enable-the-like-button)
 
 ### Uninstall
 
@@ -65,12 +65,13 @@ just uninstall-local
 - **Popup:** large artwork, seek, play/pause, next/previous, volume, open in Spotify  
 - **Shortcuts:** scroll = next/prev · middle-click = play/pause  
 - **Spotify-only MPRIS** (won’t hijack YouTube/browser players or thicken your top bar)  
+- **Library like (♥)** via personal Spotify Web API app (OAuth PKCE + Secret Service)  
+- Popup **gear** expands Spotify setup (Client ID + Connect / Disconnect) without cluttering the player UI  
 - Built with **Rust** + **libcosmic** for native COSMIC look & feel  
-- [Library like (♥) via Spotify Web API](#enable-the-like-button) (upcoming)
 
 ## Enable the Like Button
 
-> **Status:** The Spotify Web API like button is upcoming. The setup below documents the personal-app flow for that release; it does not change the existing MPRIS feature. MPRIS playback controls work without this setup and do not require Spotify Premium.
+> MPRIS playback controls work without this setup and do not require Spotify Premium. The like button needs a one-time personal Spotify Developer app and OAuth.
 
 Spotify Development Mode does not provide Cosmictify with one shared public app. Each user must create a personal Spotify Developer app because a Development Mode app supports at most **five allowlisted users**, and broader access has a high eligibility threshold. Personal use is fine: the app owner is automatically the owner account; additional test accounts must be added explicitly.
 
@@ -95,11 +96,11 @@ The app owner needs no extra allowlist entry. To test with other accounts, open 
 
 ### Connect Cosmictify
 
-Once the like-button release is available and the app is installed:
+With Cosmictify installed:
 
-1. Open the Cosmictify popup and choose **Spotify setup**.
-2. Paste the Client ID and choose **Save**.
-3. Choose **Connect Spotify**.
+1. Open the Cosmictify popup and click the **gear** icon (bottom-right) to expand **Spotify setup**.
+2. Paste the Client ID into the field (placeholder: *Spotify Client ID*).
+3. Choose **Connect Spotify** (saves the Client ID and starts authorization).
 4. Complete authorization in the system browser and approve the `user-library-read` and `user-library-modify` permissions.
 
 Cosmictify checks the current Spotify track and lets the heart button save or remove it from your Spotify library. The loopback callback is local to your computer; the browser must return to the exact URI above.
@@ -109,8 +110,7 @@ Cosmictify checks the current Spotify track and lets the heart button save or re
 - The Client ID is stored in ordinary Cosmictify configuration because it is not a secret.
 - OAuth access and refresh tokens are stored only in the Linux **Secret Service** (the desktop keyring), not in plain-text configuration. There is no plain-text fallback.
 - MPRIS playback remains independent of Spotify Web API login, so a missing or unavailable keyring does not prevent normal local media controls.
-- To disconnect, use the app’s Spotify disconnect/reset action when available. To switch Developer apps, change or clear the Client ID first: Cosmictify clears tokens tied to the previous app so they cannot be reused with another Client ID.
-- If the like button is not available yet, no Spotify Web API setup is needed; normal MPRIS operation continues as before.
+- To disconnect, open the popup gear → expand **Spotify setup** and choose **Disconnect**. To switch Developer apps, change the Client ID and choose **Connect Spotify** again: Cosmictify clears tokens tied to the previous app so they cannot be reused with another Client ID.
 
 ### Troubleshooting
 
@@ -159,7 +159,7 @@ Cosmictify talks to the Spotify desktop app over **MPRIS on D-Bus** (same family
 ## Releases for maintainers
 
 ```bash
-just release 0.1.0   # tag + GitHub release with tarball/deb
+just release 0.2.1   # tag + GitHub release with tarball/deb
 ```
 
 CI also builds on `v*` tags (`.github/workflows/release.yml`).
@@ -176,7 +176,7 @@ CI also builds on `v*` tags (`.github/workflows/release.yml`).
 
 ## Status
 
-Daily-driver MPRIS MVP works on Pop!_OS 24.04 COSMIC. Web API like button and packaging polish are next.
+Daily-driver on Pop!_OS 24.04 COSMIC: MPRIS panel/popup plus optional Spotify library like via personal Developer app (released from **v0.2.0**, patch **v0.2.1**). Current in-tree UI polish: expandable Spotify setup under the popup gear.
 
 ## License
 

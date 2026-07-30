@@ -10,20 +10,18 @@ nothing-playing = Nothing playing — open Spotify
 connect-spotify = Connect Spotify
 open-spotify = Open in Spotify
 
-# Spotify Web API like button
+# Spotify Web API setup + like
 spotify-setup = Spotify Setup
-spotify-client-id-label = Spotify Client ID
-spotify-client-id-placeholder = Paste your Client ID...
-spotify-client-id-save = Save
-spotify-client-id-clear = Clear
+spotify-settings-open = Spotify settings
+spotify-settings-hint = Configure Spotify library access via the gear icon below.
+spotify-client-id-placeholder = Spotify Client ID
 spotify-redirect-uri-label = Redirect URI for your app:
-spotify-howto-heading = How to create a Spotify Developer App
 spotify-howto-1 = 1. Go to developer.spotify.com/dashboard
 spotify-howto-2 = 2. Click Create app, name it "Cosmictify Personal"
 spotify-howto-3 = 3. Select Web API
 spotify-howto-4 = 4. Add the exact Redirect URI shown below
 spotify-howto-5 = 5. Copy only the Client ID (never the Client Secret)
-spotify-howto-6 = 6. Paste it here and Save
+spotify-howto-6 = 6. Paste it below and choose Connect Spotify
 spotify-connecting = Connecting to Spotify…
 spotify-connected = Spotify connected
 spotify-reconnect = Reconnect

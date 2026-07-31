@@ -271,14 +271,14 @@ impl<S: TokenStore> SpotifyClient<S> {
         let mut url = url::Url::parse(&format!("{}/me/library/contains", self.api_base()))
             .expect("api base + path must parse");
         url.query_pairs_mut().append_pair("uris", uri);
-        url.into_string()
+        url.into()
     }
 
     fn library_modify_url(&self, uri: &str) -> String {
         let mut url = url::Url::parse(&format!("{}/me/library", self.api_base()))
             .expect("api base + path must parse");
         url.query_pairs_mut().append_pair("uris", uri);
-        url.into_string()
+        url.into()
     }
 }
 

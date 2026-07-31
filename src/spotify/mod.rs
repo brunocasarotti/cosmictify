@@ -31,8 +31,7 @@ pub use types::{
 };
 #[allow(unused_imports, dead_code)]
 pub use keyring::{
-    InMemoryTokenStore, KeyringError, SecretServiceTokenStore, TokenStore, ACCOUNT_NAME,
-    SERVICE_NAME,
+    KeyringError, SecretServiceTokenStore, TokenStore, ACCOUNT_NAME, SERVICE_NAME,
 };
 #[allow(unused_imports, dead_code)]
 pub use client::{

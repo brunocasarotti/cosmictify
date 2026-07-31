@@ -13,6 +13,7 @@
 //! behaves identically but keeps everything in process — `cargo test` must
 //! never read or write the developer's real Secret Service.
 
+#[cfg(test)]
 use std::sync::Mutex;
 
 use crate::spotify::types::TokenSet;
@@ -119,11 +120,13 @@ fn decode_payload(raw: &str) -> Result<TokenSet, KeyringError> {
 /// `cargo test` must never touch the developer's real Secret Service, so all
 /// `spotify::keyring::tests` cases drive this fake. The behaviour mirrors the
 /// real backend's `Missing`-as-`Ok(())` semantics on `delete`.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct InMemoryTokenStore {
     inner: Mutex<Option<TokenSet>>,
 }
 
+#[cfg(test)]
 impl InMemoryTokenStore {
     /// Build an empty in-memory store.
     pub fn new() -> Self {
@@ -140,6 +143,7 @@ impl InMemoryTokenStore {
     }
 }
 
+#[cfg(test)]
 impl TokenStore for InMemoryTokenStore {
     fn load(&self) -> Result<TokenSet, KeyringError> {
         let guard = self.inner.lock().expect("in-memory store poisoned");
@@ -193,6 +197,7 @@ impl SecretServiceTokenStore {
 
     /// Build a store with an explicit service/account pair. Tests use this to
     /// isolate themselves from the production entry.
+    #[cfg(test)]
     pub fn with_service_account(service: impl Into<String>, account: impl Into<String>) -> Self {
         Self {
             service: service.into(),

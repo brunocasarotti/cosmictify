@@ -15,10 +15,8 @@
 //! persistence). The library endpoints use `serde_json` only on the
 //! small `[bool]` contains response, which is trivial to round-trip.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::io::Read;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::spotify::keyring::TokenStore;
@@ -427,12 +425,14 @@ impl<S: TokenStore> SpotifyClient<S> {
     }
 
     /// Override the OAuth token endpoint. Tests point this at a local mock.
+    #[cfg(test)]
     pub fn with_token_url(mut self, url: String) -> Self {
         self.token_url = url;
         self
     }
 
     /// Override the Web API base URL. Tests point this at a local mock.
+    #[cfg(test)]
     pub fn with_api_base(mut self, base: String) -> Self {
         self.api_base = base;
         self
@@ -699,13 +699,15 @@ fn parse_retry_after(header: Option<&str>) -> u64 {
 ///
 /// `cargo test` must never talk to production Spotify, so all network
 /// code paths in the spotify module are exercised against `MockHttp`.
+#[cfg(test)]
 pub(crate) mod testing {
-    use super::*;
     use std::collections::VecDeque;
-    use std::net::TcpListener;
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
+    use std::time::Duration;
 
     /// A single scripted HTTP response.
     #[derive(Debug, Clone)]
@@ -952,8 +954,9 @@ mod tests {
     use super::testing::{MockHttp, MockResponse};
     use super::*;
     use crate::spotify::keyring::InMemoryTokenStore;
-    use crate::spotify::types::{AuthCode, OAuthState, PkceVerifier, REQUIRED_SCOPES};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use crate::spotify::types::{AuthCode, PkceVerifier, REQUIRED_SCOPES};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_code() -> AuthCode {
         AuthCode::new("AuthCodeXYZ").unwrap()

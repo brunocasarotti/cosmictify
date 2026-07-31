@@ -16,8 +16,6 @@
 //! [`SpotifyClient`]; the tests below drive the same path against a local
 //! mock HTTP server.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use crate::spotify::client::{HttpCategory, SpotifyApiError, SpotifyClient};
 use crate::spotify::keyring::TokenStore;
 

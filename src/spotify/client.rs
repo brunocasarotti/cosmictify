@@ -468,6 +468,7 @@ impl<S: TokenStore> SpotifyClient<S> {
     /// True when the current token is within [`crate::spotify::types::REFRESH_SAFETY_MARGIN`]
     /// of expiry (or has no expiry at all). UI code calls this before each
     /// library call to decide whether a proactive refresh should fire.
+    #[cfg(test)]
     pub fn needs_refresh(&self) -> bool {
         let Some(t) = self.current_tokens() else {
             return true;
@@ -579,29 +580,10 @@ impl<S: TokenStore> SpotifyClient<S> {
         }
     }
 
-    /// Build a GET request against the Web API. The returned [`ureq::Request`]
-    /// has not been sent yet; callers use it from inside `send_authed`.
-    pub(crate) fn api_get(&self, path: &str) -> String {
-        // Concatenate the base and the path, taking care to avoid double
-        // slashes when the path starts with one.
-        let base = self.api_base.trim_end_matches('/');
-        let path = if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{path}")
-        };
-        format!("{base}{path}")
-    }
-
     /// Borrow the configured Web API base (for tests and for library
     /// helpers that need to construct absolute URLs).
     pub fn api_base(&self) -> &str {
         &self.api_base
-    }
-
-    /// Borrow the configured OAuth token endpoint URL.
-    pub fn token_url(&self) -> &str {
-        &self.token_url
     }
 
     /// Borrow the configured Client ID.
@@ -634,20 +616,6 @@ fn map_ureq_error(e: ureq::Error) -> SpotifyApiError {
         },
         ureq::Error::Transport(_) => SpotifyApiError::Transport("request_failed"),
     }
-}
-
-/// Read the body of a `ureq::Response` (or error response) into a String.
-fn collect_body(result: Result<ureq::Response, ureq::Error>) -> Result<String, SpotifyApiError> {
-    let resp = match result {
-        Ok(r) => r,
-        Err(ureq::Error::Status(_, r)) => r,
-        Err(ureq::Error::Transport(_)) => return Err(SpotifyApiError::Transport("request_failed")),
-    };
-    let mut buf = String::new();
-    resp.into_reader()
-        .read_to_string(&mut buf)
-        .map_err(|_| SpotifyApiError::Malformed("body_read_failed"))?;
-    Ok(buf)
 }
 
 /// Read the body of a `ureq::Response` from the OAuth token endpoint,
@@ -701,7 +669,6 @@ fn parse_retry_after(header: Option<&str>) -> u64 {
 /// code paths in the spotify module are exercised against `MockHttp`.
 #[cfg(test)]
 pub(crate) mod testing {
-    use std::collections::VecDeque;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -756,7 +723,6 @@ pub(crate) mod testing {
     /// State shared between the test thread and the worker.
     struct Inner {
         captured: Mutex<Vec<String>>,
-        responses: Mutex<VecDeque<MockResponse>>,
         stop: AtomicBool,
     }
 
@@ -781,7 +747,6 @@ pub(crate) mod testing {
             let addr = listener.local_addr().expect("mock listener addr");
             let inner = Arc::new(Inner {
                 captured: Mutex::new(Vec::new()),
-                responses: Mutex::new(VecDeque::new()),
                 stop: AtomicBool::new(false),
             });
             let inner_clone = Arc::clone(&inner);
@@ -806,20 +771,7 @@ pub(crate) mod testing {
                                 .lock()
                                 .expect("mock captured lock")
                                 .push(request.clone());
-                            // Try the per-request handler first.
-                            let mut response = handler(&request);
-                            // If the handler returned a 0-status placeholder
-                            // and the queue has something queued, pop one.
-                            if response.status == 0 {
-                                if let Some(queued) = inner_clone
-                                    .responses
-                                    .lock()
-                                    .expect("mock responses lock")
-                                    .pop_front()
-                                {
-                                    response = queued;
-                                }
-                            }
+                            let response = handler(&request);
                             let _ = write_http_response(&mut stream, &response);
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -844,16 +796,6 @@ pub(crate) mod testing {
         /// All request strings the mock has seen, in order.
         pub fn requests(&self) -> Vec<String> {
             self.inner.captured.lock().expect("mock captured lock").clone()
-        }
-
-        /// Push a response that will be returned for the next request that
-        /// hits the per-request handler with a `0`-status placeholder.
-        pub fn push_response(&self, response: MockResponse) {
-            self.inner
-                .responses
-                .lock()
-                .expect("mock responses lock")
-                .push_back(response);
         }
     }
 

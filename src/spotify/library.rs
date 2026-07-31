@@ -77,8 +77,6 @@ pub fn build_track_uri(track_id: &str) -> Result<String, TrackIdError> {
 /// Reasons a `/v1/me/library/contains` response may be rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainsError {
-    /// Body was not valid JSON.
-    InvalidJson,
     /// Body was not a JSON array.
     NotAnArray,
     /// Body had the wrong number of elements.
@@ -92,7 +90,6 @@ pub enum ContainsError {
 impl std::fmt::Display for ContainsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidJson => f.write_str("invalid JSON"),
             Self::NotAnArray => f.write_str("not a JSON array"),
             Self::WrongLength => f.write_str("wrong number of elements"),
             Self::NotABool => f.write_str("element is not a boolean"),
@@ -185,8 +182,7 @@ impl<S: TokenStore> SpotifyClient<S> {
             .map_err(|_| SpotifyApiError::Malformed("contains_body_read"))?;
         parse_contains(&body).map_err(|e| match e {
             ContainsError::Empty => SpotifyApiError::Malformed("contains_empty"),
-            ContainsError::InvalidJson
-            | ContainsError::NotAnArray
+            ContainsError::NotAnArray
             | ContainsError::WrongLength
             | ContainsError::NotABool => SpotifyApiError::Malformed("contains_response"),
         })

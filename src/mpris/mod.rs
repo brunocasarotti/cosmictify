@@ -8,7 +8,7 @@ mod types;
 pub use client::{
     apply_command, fetch_snapshot, MprisCommand, MprisFailure, MprisFailureKind, MprisPollOutcome,
 };
-pub use types::{format_duration, PlaybackStatus, TrackSnapshot};
+pub use types::{format_duration, TrackSnapshot};
 
 #[cfg(test)]
 mod tests {

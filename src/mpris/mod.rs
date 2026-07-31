@@ -5,7 +5,9 @@
 mod client;
 mod types;
 
-pub use client::{apply_command, fetch_snapshot, MprisCommand};
+pub use client::{
+    apply_command, fetch_snapshot, MprisCommand, MprisFailure, MprisFailureKind, MprisPollOutcome,
+};
 pub use types::{format_duration, PlaybackStatus, TrackSnapshot};
 
 #[cfg(test)]
@@ -38,18 +40,20 @@ mod tests {
 
     #[test]
     fn fetch_snapshot_when_spotify_running() {
-        let snap = super::fetch_snapshot();
+        let super::MprisPollOutcome::Connected(snap) = super::fetch_snapshot() else {
+            // Soft check: Spotify and the session bus are optional in tests.
+            return;
+        };
         // Soft check: if Spotify isn't up, connected=false is OK.
-        if snap.connected {
-            assert!(
-                snap.bus_name.to_ascii_lowercase().contains("spotify")
-                    || snap.identity.to_ascii_lowercase().contains("spotify"),
-                "expected spotify player, got bus={} identity={}",
-                snap.bus_name,
-                snap.identity
-            );
-            assert!(!snap.title.is_empty() || !snap.artist.is_empty());
-            assert!(snap.track_id.is_some(), "expected parseable track id");
-        }
+        assert!(snap.connected);
+        assert!(
+            snap.bus_name.to_ascii_lowercase().contains("spotify")
+                || snap.identity.to_ascii_lowercase().contains("spotify"),
+            "expected spotify player, got bus={} identity={}",
+            snap.bus_name,
+            snap.identity
+        );
+        assert!(!snap.title.is_empty() || !snap.artist.is_empty());
+        assert!(snap.track_id.is_some(), "expected parseable track id");
     }
 }

@@ -18,55 +18,128 @@ pub enum MprisCommand {
     SetVolume(f64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MprisFailureKind {
+    Finder,
+    Enumeration,
+    Snapshot,
+    Command,
+    Worker,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MprisFailure {
+    kind: MprisFailureKind,
+}
+
+impl MprisFailure {
+    const fn new(kind: MprisFailureKind) -> Self {
+        Self { kind }
+    }
+
+    pub fn worker() -> Self {
+        Self::new(MprisFailureKind::Worker)
+    }
+
+    pub const fn kind(&self) -> MprisFailureKind {
+        self.kind
+    }
+}
+
+impl std::fmt::Display for MprisFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            MprisFailureKind::Finder => f.write_str("MPRIS connection failed"),
+            MprisFailureKind::Enumeration => f.write_str("MPRIS player enumeration failed"),
+            MprisFailureKind::Snapshot => f.write_str("MPRIS snapshot read failed"),
+            MprisFailureKind::Command => f.write_str("MPRIS command failed"),
+            MprisFailureKind::Worker => f.write_str("MPRIS worker failed"),
+        }
+    }
+}
+
+impl std::error::Error for MprisFailure {}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MprisPollOutcome {
+    Connected(Box<TrackSnapshot>),
+    Unavailable,
+    Failed(MprisFailure),
+}
+
 /// Poll current track snapshot. Spotify-only (this is Cosmictify).
-pub fn fetch_snapshot() -> TrackSnapshot {
-    let Ok(finder) = PlayerFinder::new() else {
-        return TrackSnapshot::default();
+pub fn fetch_snapshot() -> MprisPollOutcome {
+    let finder = match PlayerFinder::new() {
+        Ok(finder) => finder,
+        Err(_) => {
+            return MprisPollOutcome::Failed(MprisFailure::new(MprisFailureKind::Finder));
+        }
     };
 
-    let Ok(players) = finder.find_all() else {
-        return TrackSnapshot::default();
+    let players = match finder.find_all() {
+        Ok(players) => players,
+        Err(_) => {
+            return MprisPollOutcome::Failed(MprisFailure::new(MprisFailureKind::Enumeration));
+        }
     };
 
     let Some(player) = pick_spotify(&players) else {
-        return TrackSnapshot::default();
+        return MprisPollOutcome::Unavailable;
     };
 
-    snapshot_from_player(player)
+    match snapshot_from_player(player) {
+        Ok(snapshot) => MprisPollOutcome::Connected(Box::new(snapshot)),
+        Err(error) => MprisPollOutcome::Failed(error),
+    }
 }
 
-pub fn apply_command(cmd: MprisCommand) -> Result<(), String> {
-    let finder = PlayerFinder::new().map_err(|e| e.to_string())?;
-    let players = finder.find_all().map_err(|e| e.to_string())?;
-    let player = pick_spotify(&players).ok_or_else(|| "Spotify not running".to_string())?;
+pub fn apply_command(cmd: MprisCommand) -> Result<(), MprisFailure> {
+    let finder = PlayerFinder::new().map_err(|_| MprisFailure::new(MprisFailureKind::Finder))?;
+    let players = finder
+        .find_all()
+        .map_err(|_| MprisFailure::new(MprisFailureKind::Enumeration))?;
+    let player =
+        pick_spotify(&players).ok_or_else(|| MprisFailure::new(MprisFailureKind::Command))?;
 
     match cmd {
-        MprisCommand::PlayPause => player.play_pause().map_err(|e| e.to_string())?,
-        MprisCommand::Next => player.next().map_err(|e| e.to_string())?,
-        MprisCommand::Previous => player.previous().map_err(|e| e.to_string())?,
+        MprisCommand::PlayPause => player
+            .play_pause()
+            .map_err(|_| MprisFailure::new(MprisFailureKind::Command))?,
+        MprisCommand::Next => player
+            .next()
+            .map_err(|_| MprisFailure::new(MprisFailureKind::Command))?,
+        MprisCommand::Previous => player
+            .previous()
+            .map_err(|_| MprisFailure::new(MprisFailureKind::Command))?,
         MprisCommand::SetVolume(v) => {
             let v = v.clamp(0.0, 1.0);
-            player.set_volume(v).map_err(|e| e.to_string())?;
+            player
+                .set_volume(v)
+                .map_err(|_| MprisFailure::new(MprisFailureKind::Command))?;
         }
         MprisCommand::SeekFraction(frac) => {
             let frac = frac.clamp(0.0, 1.0);
-            let meta = player.get_metadata().map_err(|e| e.to_string())?;
+            let meta = player
+                .get_metadata()
+                .map_err(|_| MprisFailure::new(MprisFailureKind::Command))?;
             let length = meta
                 .length()
-                .ok_or_else(|| "track length unknown".to_string())?;
+                .ok_or_else(|| MprisFailure::new(MprisFailureKind::Command))?;
             let target = Duration::from_secs_f64(length.as_secs_f64() * frac);
             if let Some(track_id) = meta.track_id() {
-                if let Err(e) = player.set_position(track_id, &target) {
+                if player.set_position(track_id, &target).is_err() {
                     let pos = player.get_position().unwrap_or(Duration::ZERO);
                     let delta = target.as_micros().saturating_sub(pos.as_micros()) as i64;
                     player
                         .seek(delta)
-                        .map_err(|err| format!("{e}; seek: {err}"))?;
+                        .map_err(|_| MprisFailure::new(MprisFailureKind::Command))?;
                 }
             } else {
                 let pos = player.get_position().unwrap_or(Duration::ZERO);
                 let delta = target.as_micros() as i64 - pos.as_micros() as i64;
-                player.seek(delta).map_err(|e| e.to_string())?;
+                player
+                    .seek(delta)
+                    .map_err(|_| MprisFailure::new(MprisFailureKind::Command))?;
             }
         }
     }
@@ -84,18 +157,17 @@ fn pick_spotify<'a>(players: &'a [Player]) -> Option<&'a Player> {
     })
 }
 
-fn snapshot_from_player(player: &Player) -> TrackSnapshot {
-    let metadata = player.get_metadata().unwrap_or_default();
+fn snapshot_from_player(player: &Player) -> Result<TrackSnapshot, MprisFailure> {
+    let metadata = player
+        .get_metadata()
+        .map_err(|_| MprisFailure::new(MprisFailureKind::Snapshot))?;
     let status = match player.get_playback_status() {
         Ok(mpris::PlaybackStatus::Playing) => PlaybackStatus::Playing,
         Ok(mpris::PlaybackStatus::Paused) => PlaybackStatus::Paused,
         _ => PlaybackStatus::Stopped,
     };
 
-    let title = metadata
-        .title()
-        .map(sanitize_one_line)
-        .unwrap_or_default();
+    let title = metadata.title().map(sanitize_one_line).unwrap_or_default();
     let artist = metadata
         .artists()
         .map(|a| sanitize_one_line(&a.join(", ")))
@@ -128,7 +200,7 @@ fn snapshot_from_player(player: &Player) -> TrackSnapshot {
     let can_seek = player.can_seek().unwrap_or(false);
     let shuffle = player.get_shuffle().unwrap_or(false);
 
-    TrackSnapshot {
+    Ok(TrackSnapshot {
         connected: true,
         identity: player.identity().to_string(),
         bus_name: player.bus_name_trimmed().to_string(),
@@ -148,10 +220,22 @@ fn snapshot_from_player(player: &Player) -> TrackSnapshot {
         can_pause,
         can_seek,
         shuffle,
-    }
+    })
 }
 
 /// Collapse whitespace/newlines so panel text never wraps vertically.
 fn sanitize_one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MprisFailure, MprisFailureKind};
+
+    #[test]
+    fn failure_display_contains_only_allowlisted_text() {
+        let failure = MprisFailure::new(MprisFailureKind::Command);
+
+        assert_eq!(failure.to_string(), "MPRIS command failed");
+    }
 }

@@ -47,6 +47,14 @@ check-json: (check '--message-format=json')
 run *args:
     env RUST_BACKTRACE=full cargo run --release {{args}}
 
+# Follow Cosmictify logs from the current user journal
+logs:
+    journalctl --user _COMM=cosmictify --lines=100 --follow --output=short-precise
+
+# Follow warnings and errors from Cosmictify
+logs-warnings:
+    journalctl --user _COMM=cosmictify --priority=warning --lines=100 --follow --output=short-precise
+
 # Installs files (system-wide; needs write access to prefix)
 install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
@@ -68,6 +76,20 @@ install-local: build-release
     gtk-update-icon-cache -f "${prefix}/share/icons/hicolor" 2>/dev/null || true
     echo "Installed to ${prefix}. Add Cosmictify via Settings → Desktop → Panel → Applets."
     echo "Reload: remove/re-add the applet, or: pkill -x {{name}}"
+
+# Install the unstripped debug build into ~/.local for debugger attachment.
+# This replaces the locally installed binary; the panel must reload it before attaching.
+install-local-debug: build-debug
+    #!/usr/bin/env bash
+    set -euo pipefail
+    prefix="${HOME}/.local"
+    install -Dm0755 "{{ cargo-target-dir / 'debug' / name }}" "${prefix}/bin/{{name}}"
+    install -Dm0644 resources/app.desktop "${prefix}/share/applications/{{appid}}.desktop"
+    install -Dm0644 resources/app.metainfo.xml "${prefix}/share/metainfo/{{appid}}.metainfo.xml"
+    install -Dm0644 resources/icon.svg "${prefix}/share/icons/hicolor/scalable/apps/{{appid}}.svg"
+    gtk-update-icon-cache -f "${prefix}/share/icons/hicolor" 2>/dev/null || true
+    echo "Debug build with symbols installed to ${prefix}/bin/{{name}}."
+    echo "Reload the panel applet, then attach VS Code/CodeLLDB to its {{name}} PID."
 
 # Uninstalls installed files
 uninstall:

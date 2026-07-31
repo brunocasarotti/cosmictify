@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: MIT
 
-use crate::art;
 use crate::config::Config;
-use crate::fl;
 use crate::marquee::Marquee;
-use crate::mpris::{self, format_duration, MprisCommand, TrackSnapshot};
-use crate::spotify::{
-    self, LoopbackError, OAuthState, SecretServiceTokenStore, SpotifyApiError, SpotifyClient,
-    TokenStore,
+use crate::mpris::{
+    self, format_duration, MprisCommand, MprisFailure, MprisFailureKind, MprisPollOutcome,
+    TrackSnapshot,
 };
+use crate::spotify::{
+    self, KeyringError, LoopbackError, OAuthState, SecretServiceTokenStore, SpotifyApiError,
+    SpotifyClient, TokenStore,
+};
+use crate::{art, fl};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::mouse::ScrollDelta;
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
-use cosmic::iced::time;
 use cosmic::iced::widget::image::Handle;
 use cosmic::iced::widget::text::Wrapping;
-use cosmic::iced::{window::Id, Length, Limits, Subscription};
+use cosmic::iced::window::Id;
+use cosmic::iced::{self, event, time, window, Length, Limits, Subscription};
 use cosmic::prelude::*;
 use cosmic::widget::{self, space};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
@@ -27,6 +30,88 @@ const TICK_INTERVAL: Duration = Duration::from_millis(33);
 const POPUP_ART: u16 = 128;
 const SPOTIFY_GREEN: [f32; 4] = [0.114, 0.725, 0.329, 1.0];
 const PANEL_PROGRESS_WIDTH: f32 = crate::marquee::VIEWPORT_WIDTH;
+
+#[derive(Debug, Clone, PartialEq)]
+struct PanelDiagnosticSnapshot {
+    output_name: String,
+    panel_type: String,
+    anchor: String,
+    configured_size: String,
+    suggested_bounds: Option<(f32, f32)>,
+    scale_factor: f32,
+    suggested_icon_size: (u16, u16),
+    suggested_padding: (u16, u16),
+}
+
+impl PanelDiagnosticSnapshot {
+    fn capture(core: &cosmic::Core) -> Self {
+        Self {
+            output_name: core.applet.output_name.clone(),
+            panel_type: core.applet.panel_type.to_string(),
+            anchor: format!("{:?}", core.applet.anchor),
+            configured_size: format!("{:?}", core.applet.size),
+            suggested_bounds: core
+                .applet
+                .suggested_bounds
+                .map(|bounds| (bounds.width, bounds.height)),
+            scale_factor: core.scale_factor(),
+            suggested_icon_size: core.applet.suggested_size(true),
+            suggested_padding: core.applet.suggested_padding(true),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        output_name: &str,
+        scale_factor: f32,
+        suggested_bounds: Option<(f32, f32)>,
+    ) -> Self {
+        Self {
+            output_name: output_name.to_string(),
+            panel_type: "Panel".to_string(),
+            anchor: "Top".to_string(),
+            configured_size: "PanelSize(S)".to_string(),
+            suggested_bounds,
+            scale_factor,
+            suggested_icon_size: (16, 16),
+            suggested_padding: (4, 4),
+        }
+    }
+}
+
+fn diagnostics_changed(
+    previous: &PanelDiagnosticSnapshot,
+    current: &PanelDiagnosticSnapshot,
+) -> bool {
+    previous != current
+}
+
+fn should_log_resize(previous: Option<(f32, f32)>, current: (f32, f32)) -> bool {
+    previous != Some(current)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WindowDiagnosticEvent {
+    Opened { width: f32, height: f32 },
+    Closed,
+    Resized { width: f32, height: f32 },
+    Rescaled(f32),
+    CloseRequested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MprisDiagnosticState {
+    Connected,
+    Unavailable,
+    Failed(MprisFailureKind),
+}
+
+fn mpris_transition_changed(
+    previous: Option<MprisDiagnosticState>,
+    current: MprisDiagnosticState,
+) -> bool {
+    previous != Some(current)
+}
 
 /// Authentication state with the Spotify Web API.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +168,9 @@ pub struct AppModel {
     spotify_client: Option<SpotifyClient<SecretServiceTokenStore>>,
     /// Buffer for the Client ID text input field.
     spotify_client_id_input: String,
+    panel_diagnostics: Option<PanelDiagnosticSnapshot>,
+    window_sizes: HashMap<Id, (f32, f32)>,
+    mpris_diagnostic_state: Option<MprisDiagnosticState>,
 }
 
 impl Default for AppModel {
@@ -106,6 +194,9 @@ impl Default for AppModel {
             spotify_like_track: None,
             spotify_client: None,
             spotify_client_id_input: String::new(),
+            panel_diagnostics: None,
+            window_sizes: HashMap::new(),
+            mpris_diagnostic_state: None,
         }
     }
 }
@@ -116,8 +207,12 @@ pub enum Message {
     PopupClosed(Id),
     /// Expand/collapse the Spotify setup section inside the popup.
     ToggleSpotifySettings,
+    WindowDiagnostic {
+        id: Id,
+        event: WindowDiagnosticEvent,
+    },
     UpdateConfig(Config),
-    MprisUpdate(TrackSnapshot),
+    MprisUpdate(MprisPollOutcome),
     PollMpris,
     Tick,
     PlayPause,
@@ -128,9 +223,12 @@ pub enum Message {
     OpenInSpotify,
     ArtLoaded {
         url: String,
-        handle: Option<Handle>,
+        result: Result<Handle, art::ArtLoadError>,
     },
-    CommandDone,
+    CommandDone {
+        command: MprisCommand,
+        result: Result<(), MprisFailure>,
+    },
     Scroll(ScrollDelta),
     /// Spotify Web API: begin OAuth PKCE flow (also persists Client ID from the field).
     SpotifyConnect,
@@ -176,20 +274,38 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        let cosmic_cfg = cosmic_config::Config::new(Self::APP_ID, Config::VERSION).ok();
-        let config = cosmic_cfg.as_ref().map(|context| match Config::get_entry(context) {
-            Ok(config) => config,
-            Err((_errors, config)) => config,
-        }).unwrap_or_default();
+        let cosmic_cfg = match cosmic_config::Config::new(Self::APP_ID, Config::VERSION) {
+            Ok(context) => Some(context),
+            Err(_) => {
+                tracing::warn!("cosmic-config context unavailable; using defaults");
+                None
+            }
+        };
+        let config = cosmic_cfg
+            .as_ref()
+            .map(|context| match Config::get_entry(context) {
+                Ok(config) => config,
+                Err((errors, config)) => {
+                    tracing::warn!(
+                        error_count = errors.len(),
+                        "cosmic-config contained invalid entries; using recovered values"
+                    );
+                    config
+                }
+            })
+            .unwrap_or_default();
 
+        let panel_diagnostics = PanelDiagnosticSnapshot::capture(&core);
         let mut app = AppModel {
             core,
             cosmic_config: cosmic_cfg,
             config: config.clone(),
             spotify_client_id_input: config.spotify_client_id.clone(),
+            panel_diagnostics: Some(panel_diagnostics),
             ..Default::default()
         };
         app.init_spotify();
+        app.log_applet_initialized();
 
         (
             app,
@@ -254,6 +370,26 @@ impl cosmic::Application for AppModel {
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
                 .map(|update| Message::UpdateConfig(update.config)),
+            event::listen_with(|event, _, id| {
+                let iced::Event::Window(window_event) = event else {
+                    return None;
+                };
+                let event = match window_event {
+                    window::Event::Opened { size, .. } => WindowDiagnosticEvent::Opened {
+                        width: size.width,
+                        height: size.height,
+                    },
+                    window::Event::Closed => WindowDiagnosticEvent::Closed,
+                    window::Event::Resized(size) => WindowDiagnosticEvent::Resized {
+                        width: size.width,
+                        height: size.height,
+                    },
+                    window::Event::Rescaled(factor) => WindowDiagnosticEvent::Rescaled(factor),
+                    window::Event::CloseRequested => WindowDiagnosticEvent::CloseRequested,
+                    _ => return None,
+                };
+                Some(Message::WindowDiagnostic { id, event })
+            }),
         ])
     }
 
@@ -261,11 +397,21 @@ impl cosmic::Application for AppModel {
         match message {
             Message::TogglePopup => {
                 return if let Some(p) = self.popup.take() {
+                    tracing::info!(popup_id = ?p, "popup close requested");
                     self.spotify_settings_open = false;
                     destroy_popup(p)
                 } else {
                     let new_id = Id::unique();
                     self.popup.replace(new_id);
+                    tracing::info!(
+                        popup_id = ?new_id,
+                        parent_id = ?self.core.main_window_id(),
+                        min_width = 320.0,
+                        max_width = 380.0,
+                        min_height = 180.0,
+                        max_height = 640.0,
+                        "popup open requested"
+                    );
                     let mut popup_settings = self.core.applet.get_popup_settings(
                         self.core.main_window_id().unwrap(),
                         new_id,
@@ -284,20 +430,53 @@ impl cosmic::Application for AppModel {
             }
             Message::PopupClosed(id) => {
                 if is_popup_id(self.popup, id) {
+                    tracing::info!(popup_id = ?id, "popup closed");
                     self.popup = None;
                     self.spotify_settings_open = false;
                 }
             }
             Message::ToggleSpotifySettings => {
                 self.spotify_settings_open = !self.spotify_settings_open;
+                tracing::debug!(
+                    expanded = self.spotify_settings_open,
+                    popup_id = ?self.popup,
+                    "Spotify setup section toggled"
+                );
+            }
+            Message::WindowDiagnostic { id, event } => {
+                let role = self.surface_role(id);
+                match event {
+                    WindowDiagnosticEvent::Opened { width, height } => {
+                        self.window_sizes.insert(id, (width, height));
+                        tracing::info!(window_id = ?id, role, width, height, "window opened");
+                    }
+                    WindowDiagnosticEvent::Closed => {
+                        self.window_sizes.remove(&id);
+                        tracing::info!(window_id = ?id, role, "window closed");
+                    }
+                    WindowDiagnosticEvent::Resized { width, height } => {
+                        let previous = self.window_sizes.get(&id).copied();
+                        if should_log_resize(previous, (width, height)) {
+                            self.window_sizes.insert(id, (width, height));
+                            tracing::debug!(window_id = ?id, role, width, height, "window resized");
+                        }
+                    }
+                    WindowDiagnosticEvent::Rescaled(factor) => {
+                        tracing::info!(window_id = ?id, role, factor, "window scale factor changed");
+                    }
+                    WindowDiagnosticEvent::CloseRequested => {
+                        tracing::debug!(window_id = ?id, role, "window close requested by compositor");
+                    }
+                }
             }
             Message::PollMpris => {
+                self.log_panel_diagnostics_if_changed();
                 return Task::perform(poll_mpris(), |snap| {
                     cosmic::Action::App(Message::MprisUpdate(snap))
                 });
             }
             Message::MprisUpdate(snap) => {
-                return self.apply_snapshot(snap);
+                return self.apply_mpris_outcome(snap);
             }
             Message::Tick => {
                 // Time-based marquee/progress need a state bump to repaint.
@@ -337,20 +516,39 @@ impl cosmic::Application for AppModel {
                 return run_command(MprisCommand::SetVolume(v));
             }
             Message::OpenInSpotify => {
-                if let Some(url) = self.track.url.clone() {
-                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                let result = if let Some(url) = self.track.url.clone() {
+                    std::process::Command::new("xdg-open").arg(url).spawn()
                 } else {
-                    let _ = std::process::Command::new("xdg-open")
+                    std::process::Command::new("xdg-open")
                         .arg("spotify:")
-                        .spawn();
+                        .spawn()
+                };
+                match result {
+                    Ok(_) => tracing::debug!("Spotify URI opener spawned"),
+                    Err(error) => tracing::warn!(%error, "failed to open Spotify URI"),
                 }
             }
-            Message::ArtLoaded { url, handle } => {
+            Message::ArtLoaded { url, result } => {
                 if self.current_art_url.as_deref() == Some(url.as_str()) {
-                    self.album_art = handle;
+                    match result {
+                        Ok(handle) => {
+                            self.album_art = Some(handle);
+                            tracing::debug!("album artwork loaded");
+                        }
+                        Err(error) => {
+                            self.album_art = None;
+                            tracing::debug!(%error, "album artwork load failed");
+                        }
+                    }
+                } else {
+                    tracing::debug!("stale album artwork result ignored");
                 }
             }
-            Message::CommandDone => {
+            Message::CommandDone { command, result } => {
+                match result {
+                    Ok(()) => tracing::debug!(?command, "MPRIS command completed"),
+                    Err(error) => tracing::warn!(?command, %error, "MPRIS command failed"),
+                }
                 return Task::perform(poll_mpris(), |snap| {
                     cosmic::Action::App(Message::MprisUpdate(snap))
                 });
@@ -361,6 +559,7 @@ impl cosmic::Application for AppModel {
                 self.config = config;
                 self.spotify_client_id_input = self.config.spotify_client_id.clone();
                 if client_id_changed {
+                    tracing::info!("Spotify configuration changed");
                     self.init_spotify();
                 }
             }
@@ -379,6 +578,7 @@ impl cosmic::Application for AppModel {
                 };
                 let client_id = client.client_id().to_owned();
                 self.spotify_auth = AuthState::Connecting;
+                tracing::info!("Spotify OAuth flow started");
                 return Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || run_oauth_flow(&client_id))
@@ -388,18 +588,25 @@ impl cosmic::Application for AppModel {
                     |result| cosmic::Action::App(Message::SpotifyCallbackDone(result)),
                 );
             }
-            Message::SpotifyCallbackDone(result) => {
-                match result {
-                    Ok(()) => {
-                        self.spotify_auth = AuthState::Connected;
-                        return self.start_like_check();
-                    }
-                    Err(_) => self.spotify_auth = AuthState::ReconnectRequired,
+            Message::SpotifyCallbackDone(result) => match result {
+                Ok(()) => {
+                    tracing::info!("Spotify OAuth flow completed");
+                    self.spotify_auth = AuthState::Connected;
+                    return self.start_like_check();
                 }
-            }
+                Err(error) => {
+                    tracing::warn!(%error, "Spotify OAuth flow failed");
+                    self.spotify_auth = AuthState::ReconnectRequired;
+                }
+            },
             Message::SpotifyDisconnect => {
                 if let Some(client) = self.spotify_client.as_ref() {
-                    let _ = client.store().delete();
+                    match client.store().delete() {
+                        Ok(()) => tracing::info!("Spotify credentials deleted"),
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to delete Spotify credentials");
+                        }
+                    }
                 }
                 self.spotify_auth = if self.spotify_client.is_some() {
                     AuthState::Disconnected
@@ -411,14 +618,21 @@ impl cosmic::Application for AppModel {
             }
             Message::SpotifyLikeCheckResult { track_id, result } => {
                 if !result_matches_current_track(self.track.track_id.as_deref(), &track_id) {
+                    tracing::debug!("stale Spotify library check ignored");
                     return Task::none();
                 }
                 match result {
                     Ok(saved) => {
+                        tracing::debug!(saved, "Spotify library check completed");
                         self.spotify_error = None;
-                        self.spotify_like = if saved { LikeState::Saved } else { LikeState::Unsaved };
+                        self.spotify_like = if saved {
+                            LikeState::Saved
+                        } else {
+                            LikeState::Unsaved
+                        };
                     }
                     Err(error) => {
+                        tracing::warn!(%error, "Spotify library check failed");
                         self.spotify_error = Some(spotify_error_message(&error));
                         self.spotify_like = LikeState::Error;
                     }
@@ -439,7 +653,9 @@ impl cosmic::Application for AppModel {
                     async move {
                         tokio::task::spawn_blocking(move || {
                             let store = SecretServiceTokenStore::new();
-                            let tokens = store.load().map_err(|_| SpotifyApiError::Refresh("keyring_load_failed"))?;
+                            let tokens = store
+                                .load()
+                                .map_err(|_| SpotifyApiError::Refresh("keyring_load_failed"))?;
                             let client = SpotifyClient::new(client_id, store).with_tokens(tokens);
                             if should_save {
                                 client.library_save(&track_id)
@@ -465,14 +681,21 @@ impl cosmic::Application for AppModel {
                 result,
             } => {
                 if !result_matches_current_track(self.track.track_id.as_deref(), &track_id) {
+                    tracing::debug!("stale Spotify library mutation ignored");
                     return Task::none();
                 }
                 match result {
                     Ok(()) => {
+                        tracing::debug!(saved, "Spotify library mutation completed");
                         self.spotify_error = None;
-                        self.spotify_like = if saved { LikeState::Saved } else { LikeState::Unsaved };
+                        self.spotify_like = if saved {
+                            LikeState::Saved
+                        } else {
+                            LikeState::Unsaved
+                        };
                     }
                     Err(error) => {
+                        tracing::warn!(saved, %error, "Spotify library mutation failed");
                         self.spotify_error = Some(spotify_error_message(&error));
                         self.spotify_like = LikeState::Error;
                     }
@@ -488,6 +711,52 @@ impl cosmic::Application for AppModel {
 }
 
 impl AppModel {
+    fn log_applet_initialized(&self) {
+        if let Some(snapshot) = self.panel_diagnostics.as_ref() {
+            self.log_panel_snapshot("applet model initialized", snapshot);
+        }
+    }
+
+    fn log_panel_diagnostics_if_changed(&mut self) {
+        let current = PanelDiagnosticSnapshot::capture(&self.core);
+        let changed = self
+            .panel_diagnostics
+            .as_ref()
+            .is_none_or(|previous| diagnostics_changed(previous, &current));
+
+        if changed {
+            self.log_panel_snapshot("panel context changed", &current);
+            self.panel_diagnostics = Some(current);
+        }
+    }
+
+    fn log_panel_snapshot(&self, message: &'static str, snapshot: &PanelDiagnosticSnapshot) {
+        tracing::info!(
+            pid = std::process::id(),
+            version = env!("CARGO_PKG_VERSION"),
+            main_window_id = ?self.core.main_window_id(),
+            output = %snapshot.output_name,
+            panel_type = %snapshot.panel_type,
+            anchor = %snapshot.anchor,
+            configured_size = %snapshot.configured_size,
+            suggested_bounds = ?snapshot.suggested_bounds,
+            scale_factor = snapshot.scale_factor,
+            suggested_icon_size = ?snapshot.suggested_icon_size,
+            suggested_padding = ?snapshot.suggested_padding,
+            "{message}"
+        );
+    }
+
+    fn surface_role(&self, id: Id) -> &'static str {
+        if self.core.main_window_id() == Some(id) {
+            "main"
+        } else if self.popup == Some(id) {
+            "popup"
+        } else {
+            "unknown"
+        }
+    }
+
     fn client_id_input_is_valid(&self) -> bool {
         let id = self.spotify_client_id_input.trim();
         id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
@@ -497,15 +766,27 @@ impl AppModel {
     /// Clears keyring tokens when the Client ID changes (tokens are app-bound).
     fn save_client_id_from_input(&mut self) {
         let id = self.spotify_client_id_input.trim().to_string();
-        if id != self.config.spotify_client_id {
-            if let Some(client) = self.spotify_client.as_ref() {
-                let _ = client.store().delete();
-            }
+        let credential_delete_error = if id != self.config.spotify_client_id {
+            self.spotify_client
+                .as_ref()
+                .and_then(|client| client.store().delete().err())
+        } else {
+            None
+        };
+        if let Some(error) = credential_delete_error {
+            tracing::warn!(%error, "failed to delete credentials for previous Spotify configuration");
         }
         if let Some(ctx) = &self.cosmic_config {
             let mut new_config = self.config.clone();
             new_config.spotify_client_id = id.clone();
-            let _ = new_config.write_entry(ctx);
+            match new_config.write_entry(ctx) {
+                Ok(()) => tracing::info!("Spotify configuration saved"),
+                Err(_) => tracing::warn!("failed to write Spotify configuration"),
+            }
+        } else {
+            tracing::warn!(
+                "Spotify configuration was not persisted because cosmic-config is unavailable"
+            );
         }
         self.config.spotify_client_id = id;
         self.init_spotify();
@@ -521,6 +802,7 @@ impl AppModel {
             return;
         }
         if spotify::validate_client_id(&client_id).is_err() {
+            tracing::warn!("configured Spotify Client ID is invalid");
             self.spotify_auth = AuthState::Unconfigured;
             self.spotify_client = None;
             self.spotify_like = LikeState::Unavailable;
@@ -530,10 +812,18 @@ impl AppModel {
         let store = SecretServiceTokenStore::new();
         match store.load() {
             Ok(tokens) => {
-                self.spotify_client = Some(SpotifyClient::new(client_id, store).with_tokens(tokens));
+                tracing::info!("Spotify credentials loaded from Secret Service");
+                self.spotify_client =
+                    Some(SpotifyClient::new(client_id, store).with_tokens(tokens));
                 self.spotify_auth = AuthState::Connected;
             }
-            Err(_) => {
+            Err(KeyringError::Missing) => {
+                tracing::debug!("no Spotify credentials found in Secret Service");
+                self.spotify_client = Some(SpotifyClient::new(client_id, store));
+                self.spotify_auth = AuthState::Disconnected;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to load Spotify credentials from Secret Service");
                 self.spotify_client = Some(SpotifyClient::new(client_id, store));
                 self.spotify_auth = AuthState::Disconnected;
             }
@@ -555,6 +845,35 @@ impl AppModel {
             return 0.0;
         };
         (self.estimated_position().as_secs_f64() / len.as_secs_f64()).clamp(0.0, 1.0)
+    }
+
+    fn apply_mpris_outcome(&mut self, outcome: MprisPollOutcome) -> Task<cosmic::Action<Message>> {
+        let state = match &outcome {
+            MprisPollOutcome::Connected(_) => MprisDiagnosticState::Connected,
+            MprisPollOutcome::Unavailable => MprisDiagnosticState::Unavailable,
+            MprisPollOutcome::Failed(error) => MprisDiagnosticState::Failed(error.kind()),
+        };
+
+        if mpris_transition_changed(self.mpris_diagnostic_state, state) {
+            match &outcome {
+                MprisPollOutcome::Connected(_) => {
+                    tracing::info!("Spotify MPRIS connected");
+                }
+                MprisPollOutcome::Unavailable => {
+                    tracing::info!("Spotify MPRIS unavailable");
+                }
+                MprisPollOutcome::Failed(error) => {
+                    tracing::warn!(kind = ?error.kind(), %error, "MPRIS polling failed");
+                }
+            }
+            self.mpris_diagnostic_state = Some(state);
+        }
+
+        match outcome {
+            MprisPollOutcome::Connected(snapshot) => self.apply_snapshot(*snapshot),
+            MprisPollOutcome::Unavailable => self.apply_snapshot(TrackSnapshot::default()),
+            MprisPollOutcome::Failed(_) => Task::none(),
+        }
     }
 
     fn apply_snapshot(&mut self, mut snap: TrackSnapshot) -> Task<cosmic::Action<Message>> {
@@ -626,8 +945,8 @@ impl AppModel {
         if art_changed {
             if let Some(url) = self.track.art_url.clone() {
                 self.current_art_url = Some(url.clone());
-                return Task::perform(art::load_art(url.clone()), move |handle| {
-                    cosmic::Action::App(Message::ArtLoaded { url, handle })
+                return Task::perform(art::load_art(url.clone()), move |result| {
+                    cosmic::Action::App(Message::ArtLoaded { url, result })
                 });
             }
         }
@@ -905,9 +1224,7 @@ impl AppModel {
             player = player.push(widget::text::caption(error.clone()));
         }
 
-        player
-            .push(self.popup_settings_footer(true))
-            .into()
+        player.push(self.popup_settings_footer(true)).into()
     }
 
     /// Build the expandable Spotify setup section (shown under the gear).
@@ -945,11 +1262,10 @@ impl AppModel {
             .on_input(Message::SpotifyClientIdInput);
 
             section = section.push(input).push(
-                widget::button::suggested(fl!("connect-spotify"))
-                    .on_press_maybe(
-                        self.client_id_input_is_valid()
-                            .then_some(Message::SpotifyConnect),
-                    ),
+                widget::button::suggested(fl!("connect-spotify")).on_press_maybe(
+                    self.client_id_input_is_valid()
+                        .then_some(Message::SpotifyConnect),
+                ),
             );
         }
 
@@ -1046,18 +1362,28 @@ fn progress_bar<'a>(fraction: f64, width: f32, height: f32) -> Element<'a, Messa
     .into()
 }
 
-async fn poll_mpris() -> TrackSnapshot {
-    tokio::task::spawn_blocking(mpris::fetch_snapshot)
-        .await
-        .unwrap_or_default()
+async fn poll_mpris() -> MprisPollOutcome {
+    match tokio::task::spawn_blocking(mpris::fetch_snapshot).await {
+        Ok(outcome) => outcome,
+        Err(_) => MprisPollOutcome::Failed(MprisFailure::worker()),
+    }
 }
 
 fn run_command(cmd: MprisCommand) -> Task<cosmic::Action<Message>> {
+    let completed_command = cmd.clone();
     Task::perform(
         async move {
-            let _ = tokio::task::spawn_blocking(move || mpris::apply_command(cmd)).await;
+            match tokio::task::spawn_blocking(move || mpris::apply_command(cmd)).await {
+                Ok(result) => result,
+                Err(_) => Err(MprisFailure::worker()),
+            }
         },
-        |_| cosmic::Action::App(Message::CommandDone),
+        move |result| {
+            cosmic::Action::App(Message::CommandDone {
+                command: completed_command,
+                result,
+            })
+        },
     )
 }
 
@@ -1098,9 +1424,10 @@ fn run_oauth_flow(client_id: &str) -> Result<(), SpotifyApiError> {
     .map_err(|_| SpotifyApiError::Transport("bind_failed"))?;
 
     // Open the authorization URL in the system browser.
-    let _ = std::process::Command::new("xdg-open")
+    std::process::Command::new("xdg-open")
         .arg(&url)
-        .spawn();
+        .spawn()
+        .map_err(|_| SpotifyApiError::Transport("browser_open_failed"))?;
 
     // Wait for the callback (60-second timeout).
     let auth_code = listener
@@ -1124,7 +1451,11 @@ fn run_oauth_flow(client_id: &str) -> Result<(), SpotifyApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_popup_id, result_matches_current_track};
+    use super::{
+        diagnostics_changed, is_popup_id, mpris_transition_changed, result_matches_current_track,
+        should_log_resize, MprisDiagnosticState, PanelDiagnosticSnapshot,
+    };
+    use crate::mpris::MprisFailureKind;
     use cosmic::iced::window::Id;
 
     #[test]
@@ -1141,5 +1472,46 @@ mod tests {
         assert!(is_popup_id(Some(popup), popup));
         assert!(!is_popup_id(Some(popup), other));
         assert!(!is_popup_id(None, popup));
+    }
+
+    #[test]
+    fn panel_diagnostics_only_report_real_changes() {
+        let first = PanelDiagnosticSnapshot::for_test("DP-1", 1.0, Some((320.0, 32.0)));
+        let same = first.clone();
+        let other_output = PanelDiagnosticSnapshot::for_test("HDMI-A-1", 1.0, Some((320.0, 32.0)));
+        let other_scale = PanelDiagnosticSnapshot::for_test("DP-1", 1.5, Some((320.0, 32.0)));
+        let other_bounds = PanelDiagnosticSnapshot::for_test("DP-1", 1.0, Some((420.0, 48.0)));
+
+        assert!(!diagnostics_changed(&first, &same));
+        assert!(diagnostics_changed(&first, &other_output));
+        assert!(diagnostics_changed(&first, &other_scale));
+        assert!(diagnostics_changed(&first, &other_bounds));
+    }
+
+    #[test]
+    fn identical_resize_is_suppressed() {
+        assert!(should_log_resize(None, (320.0, 32.0)));
+        assert!(!should_log_resize(Some((320.0, 32.0)), (320.0, 32.0)));
+        assert!(should_log_resize(Some((320.0, 32.0)), (420.0, 48.0)));
+    }
+
+    #[test]
+    fn mpris_diagnostics_only_report_state_or_category_changes() {
+        let connected = MprisDiagnosticState::Connected;
+        let unavailable = MprisDiagnosticState::Unavailable;
+        let finder_failed = MprisDiagnosticState::Failed(MprisFailureKind::Finder);
+        let enumerate_failed = MprisDiagnosticState::Failed(MprisFailureKind::Enumeration);
+
+        assert!(mpris_transition_changed(None, connected));
+        assert!(!mpris_transition_changed(Some(connected), connected));
+        assert!(mpris_transition_changed(Some(connected), unavailable));
+        assert!(!mpris_transition_changed(
+            Some(finder_failed),
+            finder_failed
+        ));
+        assert!(mpris_transition_changed(
+            Some(finder_failed),
+            enumerate_failed
+        ));
     }
 }

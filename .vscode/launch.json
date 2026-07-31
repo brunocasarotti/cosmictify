@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Cosmictify: attach to panel applet",
+            "type": "lldb",
+            "request": "attach",
+            "pid": "${command:pickMyProcess}",
+            "sourceLanguages": [
+                "rust"
+            ]
+        }
+    ]
+}

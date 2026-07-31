@@ -25,6 +25,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 tokio = { version = "1.52.0", features = ["full"] }
+tracing = "0.1"
+tracing-journald = "0.3"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "std",
+    "env-filter",
+    "registry",
+    "fmt",
+    "ansi",
+] }
 url = "2"
 mpris = "2.0.1"
 ureq = { version = "2.12", default-features = true }

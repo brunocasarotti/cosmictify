@@ -59,6 +59,18 @@ sudo apt remove cosmictify
 just uninstall-local
 ```
 
+### Debugging the panel-hosted applet
+
+Launching the executable directly from an IDE creates a standalone floating surface; popup
+behavior depends on the real `cosmic-panel` host. To install an unstripped debug build with symbols:
+
+```bash
+just install-local-debug
+```
+
+Reload the applet from the panel, then use VS Code/CodeLLDB with `request: "attach"` and select the
+corresponding `cosmictify` process. Use `just install-local` to restore the optimized release build.
+
 ## Features
 
 - **Panel tray:** album cover + scrolling **Title — Artist** marquee + thin progress bar  
@@ -177,6 +189,32 @@ CI also builds on `v*` tags (`.github/workflows/release.yml`).
 ## Status
 
 Daily-driver on Pop!_OS 24.04 COSMIC: MPRIS panel/popup plus optional Spotify library like via personal Developer app (**v0.2.2**: expandable Spotify setup under the popup gear).
+
+## Logs and diagnostics
+
+Cosmictify writes structured logs to the current user's systemd journal. When journald is not
+available (for example, outside a normal desktop session), it falls back to compact stderr logs.
+
+Follow the latest applet logs with `just logs`, or only warnings and errors with
+`just logs-warnings`.
+
+The default filter is `warn,cosmictify=info`. Override it for a single launch with the standard
+`RUST_LOG` environment variable:
+
+```bash
+RUST_LOG=cosmictify=debug cargo run --release
+```
+
+Each installed panel instance runs as a separate process. Startup and panel-context events include
+the PID and output name, so multiple monitors can be distinguished. To follow one instance after
+finding its PID:
+
+```bash
+journalctl --user _COMM=cosmictify _PID=12345 --follow --output=short-precise
+```
+
+Logs intentionally omit OAuth URLs, authorization codes, PKCE values, access and refresh tokens,
+Spotify Client IDs, track IDs, artwork URLs, titles, and artist names.
 
 ## License
 

@@ -140,13 +140,13 @@ pub fn parse_contains(body: &str) -> Result<bool, ContainsError> {
 // SpotifyClient methods
 // ---------------------------------------------------------------------------
 
-/// Concurrency latch used by the library methods to ensure we never issue
-/// more than one library mutation request at a time. The UI can hammer
-/// the heart button; without this latch we'd send every mutation request
-/// to Spotify.
-///
-/// Uses `thread_local!` so each test thread gets its own latch, avoiding
-/// false `mutation_in_flight` failures when the test suite runs in parallel.
+// Concurrency latch used by the library methods to ensure we never issue
+// more than one library mutation request at a time. The UI can hammer
+// the heart button; without this latch we'd send every mutation request
+// to Spotify.
+//
+// Uses `thread_local!` so each test thread gets its own latch, avoiding
+// false `mutation_in_flight` failures when the test suite runs in parallel.
 thread_local! {
     static LIBRARY_MUTATING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -189,7 +189,7 @@ impl<S: TokenStore> SpotifyClient<S> {
         .map_err(|err| {
             // Surface a 5xx as Http/Server so the UI can show a different
             // message than a malformed body.
-            if status >= 500 && status < 600 {
+            if (500..600).contains(&status) {
                 SpotifyApiError::Http {
                     status,
                     category: HttpCategory::Server,

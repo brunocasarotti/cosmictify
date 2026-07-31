@@ -147,7 +147,7 @@ pub fn apply_command(cmd: MprisCommand) -> Result<(), MprisFailure> {
     Ok(())
 }
 
-fn pick_spotify<'a>(players: &'a [Player]) -> Option<&'a Player> {
+fn pick_spotify(players: &[Player]) -> Option<&Player> {
     players.iter().find(|p| {
         let bus = p.bus_name_trimmed().to_ascii_lowercase();
         let id = p.identity().to_ascii_lowercase();

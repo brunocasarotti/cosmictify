@@ -121,11 +121,11 @@ fn extract_query(input: &str) -> String {
     // Bare query: starts with a key= or is `?...` already.
     let qpos = trimmed.find('?').unwrap_or(0);
     let after_q = &trimmed[qpos..];
-    if after_q.starts_with('?') {
+    if let Some(query) = after_q.strip_prefix('?') {
         // Stop at any fragment.
-        match after_q.find('#') {
-            Some(hash) => after_q[1..hash].to_string(),
-            None => after_q[1..].to_string(),
+        match query.find('#') {
+            Some(hash) => query[..hash].to_string(),
+            None => query.to_string(),
         }
     } else {
         trimmed.to_string()

@@ -942,13 +942,12 @@ impl AppModel {
             return self.start_like_check();
         }
 
-        if art_changed {
-            if let Some(url) = self.track.art_url.clone() {
-                self.current_art_url = Some(url.clone());
-                return Task::perform(art::load_art(url.clone()), move |result| {
-                    cosmic::Action::App(Message::ArtLoaded { url, result })
-                });
-            }
+        let changed_art_url = art_changed.then(|| self.track.art_url.clone()).flatten();
+        if let Some(url) = changed_art_url {
+            self.current_art_url = Some(url.clone());
+            return Task::perform(art::load_art(url.clone()), move |result| {
+                cosmic::Action::App(Message::ArtLoaded { url, result })
+            });
         }
 
         Task::none()
@@ -1343,10 +1342,12 @@ fn progress_bar<'a>(fraction: f64, width: f32, height: f32) -> Element<'a, Messa
         .width(Length::Fixed(filled))
         .height(Length::Fixed(height))
         .style(move |_theme| {
-            let mut style = widget::container::Style::default();
-            style.background = Some(cosmic::iced::Background::Color(cosmic::iced::Color::from(
-                SPOTIFY_GREEN,
-            )));
+            let mut style = widget::container::Style {
+                background: Some(cosmic::iced::Background::Color(cosmic::iced::Color::from(
+                    SPOTIFY_GREEN,
+                ))),
+                ..Default::default()
+            };
             style.border.radius = height.into();
             style
         });

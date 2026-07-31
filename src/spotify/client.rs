@@ -649,7 +649,7 @@ fn collect_token_body(
 /// back to 0 because the test suite never uses it.
 fn parse_retry_after(header: Option<&str>) -> u64 {
     let Some(value) = header else { return 0 };
-    if let Some(seconds) = value.trim().parse::<u64>().ok() {
+    if let Ok(seconds) = value.trim().parse::<u64>() {
         return seconds;
     }
     // HTTP-date: try to parse, otherwise report 0 so the UI can still
